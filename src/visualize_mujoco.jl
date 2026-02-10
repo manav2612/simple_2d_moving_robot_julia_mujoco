@@ -1,0 +1,105 @@
+#!/usr/bin/env julia
+# MuJoCo GUI viewer for AIF robot simulation.
+# Run: julia --project=. scripts/visualize_mujoco.jl
+# Requires: MuJoCo.install_visualiser() (run once if needed)
+
+using Pkg
+Pkg.activate(joinpath(@__DIR__, ".."))
+Pkg.instantiate()
+
+using MuJoCo
+using AIFMuJoCoRobot
+using Random
+using Printf
+
+MuJoCo.init_visualiser()
+
+model_path = AIFMuJoCoRobot.default_model_path()
+model = MuJoCo.load_model(model_path)
+data = MuJoCo.init_data(model)
+MuJoCo.reset!(model, data)
+
+# -------------------------
+# AIF state
+# -------------------------
+goal = [0.8, 0.8]
+init_pos = [-0.5, -0.5]
+
+Random.seed!(42)
+rng = Random.default_rng()
+
+# Set initial position
+q = collect(data.qpos)
+q[1] = init_pos[1]
+q[2] = init_pos[2]
+data.qpos[:] = q
+
+belief = AIFMuJoCoRobot.init_belief(init_pos, [0.01, 0.01])
+obs_noise = 0.01
+ctrl_scale = 1.0
+nsteps_per_ctrl = 5
+
+# -------------------------
+# Logging setup
+# -------------------------
+log_file = open("trajectory_log.csv", "w")
+println(log_file, "step,robot_x,robot_y,belief_x,belief_y,goal_x,goal_y,ctrl_x,ctrl_y")
+
+step_counter = 0
+
+function controller!(m, d)
+    global step_counter
+
+    pos = [d.qpos[1], d.qpos[2]]
+    obs = pos .+ (obs_noise > 0 ? obs_noise .* randn(rng, 2) : zeros(2))
+
+    AIFMuJoCoRobot.update_belief!(belief, obs; obs_noise = obs_noise)
+
+    # Check if goal is reached
+    dist = sqrt(sum((pos .- goal) .^ 2))
+    if dist < 0.05
+        println("Goal reached! Distance: $dist. Exiting simulation.")
+        exit(0)
+    end
+
+    result = AIFMuJoCoRobot.AIFController.compute_control(
+        belief,
+        goal;
+        γ = 1.0,
+        β = 0.1,
+        ctrl_scale = ctrl_scale
+    )
+
+    ctrl = result.ctrl
+
+    # Position actuators: target = pos + ctrl
+    target = pos .+ ctrl
+    d.ctrl[1] = clamp(target[1], -2.0, 2.0)
+    d.ctrl[2] = clamp(target[2], -2.0, 2.0)
+
+    # -------------------------
+    # Logging
+    # -------------------------
+    belief_mean = belief.mean
+
+    @printf("Step %d | Robot: (%.3f, %.3f) | Belief: (%.3f, %.3f) | Goal: (%.3f, %.3f)\n",
+        step_counter,
+        pos[1], pos[2],
+        belief_mean[1], belief_mean[2],
+        goal[1], goal[2]
+    )
+    flush(stdout)
+
+    println(log_file,
+        "$(step_counter),$(pos[1]),$(pos[2]),$(belief_mean[1]),$(belief_mean[2]),$(goal[1]),$(goal[2]),$(ctrl[1]),$(ctrl[2])"
+    )
+
+    step_counter += 1
+
+    return nothing
+end
+
+println("Launching MuJoCo visualizer... Close window to exit.")
+MuJoCo.visualise!(model, data, controller = controller!)
+
+close(log_file)

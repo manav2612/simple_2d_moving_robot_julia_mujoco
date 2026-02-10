@@ -1,0 +1,40 @@
+Parameter sweep report
+======================
+
+Grid
+- `ctrl_scale` = [1.0, 2.5, 5.0]
+- `obs_noise` (variance) = [0.001, 0.01, 0.1]
+- `process_noise` = [0.001, 0.01, 0.1]
+- `steps` = 500, `seed` = 42
+
+Results (high-level)
+- ctrl_scale = 1.0: 0 / 9 converged. Final distances ~1.20 (no convergence).
+- ctrl_scale = 2.5: 0 / 9 converged. Best final distance ≈ 0.245 (reduced, but >0.05).
+- ctrl_scale = 5.0: 6 / 9 converged (6 true / 9). Converged runs finished in [485, 327, 315, 353, 321, 422] steps; mean ≈ 354. Non-converged final distances were ~0.0768, 0.4586, 0.0878.
+
+Extended sweep (varying goals & initial positions)
+- 16 runs total (2 goals × 2 inits × 2 ctrl_scales × 2 obs_noises × 1 process_noise)
+- Converged runs: 7 / 16.
+- Convergence depends strongly on `ctrl_scale` (5.0 converges in most cases) and is degraded by high observation noise (`obs_noise = 0.1`).
+
+Examples from extended results (see experiments/sweep_extended_results.csv):
+- goal=(0.8,0.8), init=(-0.5,-0.5), ctrl=5.0, obs=0.01 → converged in 353 steps, final dist 0.0475
+- goal=(0.8,0.8), init=(-0.8,0.0), ctrl=5.0, obs=0.01 → converged in 396 steps, final dist 0.0457
+- goal=(0.5,0.2), init=(-0.5,-0.5), ctrl=5.0, obs=0.01 → converged in 287 steps, final dist 0.0470
+
+
+Key observations
+- Increasing `ctrl_scale` is the single most effective factor for achieving convergence.
+- Large observation noise (`obs_noise = 0.1`) generally harms convergence; increasing `process_noise` can sometimes help when observations are very noisy.
+- Medium `ctrl_scale` (2.5) reduces error but did not reach the convergence threshold in this grid.
+
+Recommendations
+- Use `ctrl_scale >= 5.0` for robust convergence with the current robot model and controller.
+- Keep `obs_noise` (variance) as small as realistically justified; if optics/sensors are noisy, increase `process_noise` to rely more on the action-based prior.
+- Optionally run a finer sweep around `ctrl_scale` in [4.0,6.0] and `obs_noise` in [0.005,0.02] if you want tighter defaults.
+
+Files produced
+- CSV results: experiments/sweep_results.csv
+- This report: experiments/sweep_report.txt
+
+Done.

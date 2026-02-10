@@ -1,0 +1,2 @@
+# Remembered command saved by assistant on 2026-02-09
+cd /home/manav/test/julia/simple_simple/aif_mujoco_robot && bash scripts/run_mujoco.sh --goal 0.9 0.7 --init 0.2 0.5 --ctrl_scale 5.0 --steps 5000 --save_plot simulation.png --verbose true
