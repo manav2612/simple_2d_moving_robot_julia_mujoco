@@ -10,8 +10,136 @@ using MuJoCo
 using Random
 using Plots
 
-# Global holder used by the MuJoCo visualiser controller to avoid closure/world-age issues
+# Workspace / goal bounds chosen to stay inside Panda arm's reachable region.
+const PANDA_X_MIN = 0.2
+const PANDA_X_MAX = 0.8
+const PANDA_Y_MIN = -0.4
+const PANDA_Y_MAX = 0.4
+
+function _require_id_local(model::MuJoCo.Model, objtype, name::AbstractString)
+    id = MuJoCo.mj_name2id(model, Cint(objtype), name)
+    if id < 0
+        error("Required MuJoCo object not found: name='$name', type=$objtype")
+    end
+    return id
+end
+
+function render_panda_arm_from_history(history, params)
+    positions = getfield(history, :positions)
+    if length(positions) == 0
+        println("No positions in history; skipping Panda arm render.")
+        flush(stdout)
+        return
+    end
+
+    # Load Panda model (same as Python / move_panda_arm.jl)
+    MuJoCo.init_visualiser()
+    panda_xml = normpath(joinpath(@__DIR__, "..", "..", "panda_try.xml"))
+    @printf("Rendering Panda arm using trajectory from %d AIF steps\n", length(positions))
+    flush(stdout)
+
+    model = MuJoCo.load_model(panda_xml)
+    data  = MuJoCo.init_data(model)
+    MuJoCo.reset!(model, data)
+
+    # Make the arm follow mocap without fighting the equality constraint:
+    # initialise joint actuators to current joint positions.
+    MuJoCo.forward!(model, data)
+    for i in 1:7
+        actname = "actuator$(i)"
+        act_id = _require_id_local(model, MuJoCo.mjOBJ_ACTUATOR, actname)
+        joint_id = Int(model.actuator_trnid[act_id + 1, 1])
+        qadr     = Int(model.jnt_qposadr[joint_id + 1])
+        data.ctrl[act_id + 1] = data.qpos[qadr + 1]
+    end
+
+    panda_mocap_body_id = _require_id_local(model, MuJoCo.mjOBJ_BODY, "panda_mocap")
+    mocap_id = Int(model.body_mocapid[panda_mocap_body_id + 1])
+    mocap_id < 0 && error("Body 'panda_mocap' is not a mocap body (body_mocapid < 0)")
+    mocap_row = mocap_id + 1
+
+    # Hard-coded third dimension (z) for the AIF 2D positions
+    z_height = 0.25
+    gain = 0.02
+    stop_dist = 0.02
+
+    # Map each 2D AIF point directly into the Panda workspace,
+    # only clamping to the arm's safe XY range.
+    panda_traj = Vector{Vector{Float64}}(undef, length(positions))
+    for (i, p) in enumerate(positions)
+        x = clamp(p[1], PANDA_X_MIN, PANDA_X_MAX)
+        y = clamp(p[2], PANDA_Y_MIN, PANDA_Y_MAX)
+        panda_traj[i] = [x, y]
+    end
+
+    # Start mocap at the first target point so motion begins smoothly.
+    first_xy = panda_traj[1]
+    @views begin
+        data.mocap_pos[mocap_row, 1] = first_xy[1]
+        data.mocap_pos[mocap_row, 2] = first_xy[2]
+        data.mocap_pos[mocap_row, 3] = z_height
+    end
+
+    PANDA_VIS_STATE[] = Dict(
+        :traj => panda_traj,
+        :idx => 1,
+        :z => z_height,
+        :gain => gain,
+        :stop_dist => stop_dist,
+        :mocap_row => mocap_row,
+        :vis_step => 0,
+        :last_logged_idx => 0,
+    )
+
+    function _panda_controller!(m, d)
+        s = PANDA_VIS_STATE[]
+        s === nothing && return
+
+        traj = s[:traj]
+        idx = s[:idx]
+        s[:vis_step] += 1
+        if idx > length(traj)
+            return
+        end
+
+        # Current 2D position already mapped into Panda's reachable XY workspace
+        pos2d = traj[idx]
+        target = [pos2d[1], pos2d[2], s[:z]]
+
+        r = s[:mocap_row]
+        mp = @views collect(d.mocap_pos[r, :])
+
+        # Move mocap position toward target
+        dx = target .- mp
+        if sqrt(sum(dx.^2)) > s[:stop_dist]
+            mp .+= s[:gain] .* dx
+        else
+            s[:idx] = idx + 1
+            # Log when we advance to the next target, to mirror AIF logging style.
+            @printf("Panda idx %d/%d | target=(%.3f, %.3f, %.3f)\n",
+                    idx, length(traj), target[1], target[2], target[3])
+            flush(stdout)
+        end
+
+        @views for j in 1:3
+            d.mocap_pos[r, j] = mp[j]
+        end
+
+        PANDA_VIS_STATE[] = s
+        return nothing
+    end
+
+    println("Launching Panda arm visualiser from AIF trajectory. Close window to exit.")
+    flush(stdout)
+
+    # Use the same pattern as the main visualiser: invoke via Base.invokelatest
+    # so we match the extension method signature and avoid world-age issues.
+    Base.invokelatest(MuJoCo.visualise!, model, data; controller = _panda_controller!)
+end
+
+# Global holders used by MuJoCo visualisers to avoid closure/world-age issues
 const MUJOCO_VIS_STATE = Ref{Any}(nothing)
+const PANDA_VIS_STATE  = Ref{Any}(nothing)
 
 function _mujoco_controller!(m, d)
     s = MUJOCO_VIS_STATE[]
@@ -119,6 +247,7 @@ function parse_args()
         :verbose => cfg.verbose,
         :save_plot => "",
         :render => false,
+        :renderarm => false,
         :agent_color => nothing,
         :goal_color => nothing
     )
@@ -129,9 +258,11 @@ function parse_args()
         a = args[i]
         if a == "--goal"
             (gx, gy), i = parse_float_pair(args, i+1)
+            # Keep AIF behaviour unchanged: store goal exactly as provided.
             params[:goal] = [gx, gy]
         elseif a == "--init"
             (ix, iy), i = parse_float_pair(args, i+1)
+            # Keep AIF behaviour unchanged: store init_pos exactly as provided.
             params[:init_pos] = [ix, iy]
         elseif a == "--obs_noise"
             params[:obs_noise] = parse(Float64, args[i+1]); i += 2
@@ -175,6 +306,9 @@ function parse_args()
         elseif a == "--render"
             # flag (no argument)
             params[:render] = true; i += 1
+        elseif a == "--renderarm"
+            # 3D Panda arm visualisation using AIF 2D trajectory (flag, no argument)
+            params[:renderarm] = true; i += 1
         else
             println("Unknown arg: ", a)
             i += 1
@@ -478,6 +612,19 @@ function main()
                 println("Failed to save plot: ", err)
                 flush(stdout)
                 println(log_io, "Failed to save plot: " * string(err)); flush(log_io)
+            catch
+            end
+        end
+    end
+
+    # Optional: 3D Panda arm replay of the AIF 2D trajectory.
+    if get(params, :renderarm, false)
+        try
+            render_panda_arm_from_history(res.history, params)
+        catch err
+            try
+                println("Panda arm render failed: ", err)
+                flush(stdout)
             catch
             end
         end
