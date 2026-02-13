@@ -1,10 +1,10 @@
 # AIF MuJoCo Robot
 
-A **simple** Active Inference (AIF) controller for a 2D MuJoCo robot. The robot navigates toward a goal by minimizing Expected Free Energy (EFE).
+A **simple** Active Inference (AIF) controller for a 3D MuJoCo robot. The robot navigates toward a goal by minimizing Expected Free Energy (EFE).
 
 ## Overview
 
-- **MuJoCo**: Physics simulation with a 2D point-mass robot (slide joints in x, y)
+- **MuJoCo**: Physics simulation with a 3D point-mass robot (slide joints in x, y, z)
 - **Active Inference**: Belief state, generative model, EFE-based policy selection
 - **Julia**: Implemented in Julia using MuJoCo.jl
 
@@ -79,13 +79,13 @@ Wrapper script:
 
 ```bash
 chmod +x scripts/run_mujoco.sh
-./scripts/run_mujoco.sh --goal 4.8 4.8 --init 2.5 2.5 --ctrl_scale 5.0 --steps 2000 --save_plot simulation.png --verbose true
+./scripts/run_mujoco.sh --goal 4.8 4.8 0.4 --init 2.5 2.5 0.2 --ctrl_scale 5.0 --steps 2000 --save_plot simulation.png --verbose true
 ```
 
 Direct CLI usage:
 
 ```bash
-julia --project=. scripts/run_cli.jl --goal 4.8 4.8 --init 2.5 2.5 --ctrl_scale 5.0 --steps 2000 --save_plot simulation.png --verbose true
+julia --project=. scripts/run_cli.jl --goal 4.8 4.8 0.4 --init 2.5 2.5 0.2 --ctrl_scale 5.0 --steps 2000 --save_plot simulation.png --verbose true
 ```
 
 Rendering and colors:
@@ -93,19 +93,19 @@ Rendering and colors:
 - To launch the MuJoCo visualiser during a run, pass `--render` to the CLI (requires a display):
 
 ```bash
-julia --project=. scripts/run_cli.jl --render --goal 0.9 0.6 --init 0.5 0.5 --ctrl_scale 5.0 --steps 2000
+julia --project=. scripts/run_cli.jl --render --goal 0.9 0.6 0.4 --init 0.5 0.5 0.2 --ctrl_scale 5.0 --steps 2000
 ```
 
 - To change the robot (agent) color at runtime, pass `--agent_color r g b [a]` (three or four floats, 0..1). Example to make the agent red:
 
 ```bash
-julia --project=. scripts/run_cli.jl --render --agent_color 1.0 0.0 0.0 --goal 0.9 0.6 --init 0.5 0.5 --steps 2000
+julia --project=. scripts/run_cli.jl --render --agent_color 1.0 0.0 0.0 --goal 0.9 0.6 0.4 --init 0.5 0.5 0.2 --steps 2000
 ```
 
 - To change the goal marker color, pass `--goal_color r g b [a]` similarly. Example:
 
 ```bash
-julia --project=. scripts/run_cli.jl --render --goal_color 0.0 1.0 0.0 --goal 0.9 0.6 --init 0.5 0.5 --steps 2000
+julia --project=. scripts/run_cli.jl --render --goal_color 0.0 1.0 0.0 --goal 0.9 0.6 0.4 --init 0.5 0.5 0.2 --steps 2000
 ```
 
 Notes:

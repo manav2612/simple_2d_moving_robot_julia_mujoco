@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Converts abstract 2D velocity actions into MuJoCo control signals.
+Converts abstract 3D velocity actions into MuJoCo control signals.
 
 ## Exports
 
 | Symbol | Description |
 |--------|-------------|
-| `to_control` | Map action to [vx, vy] with scaling and clamping |
+| `to_control` | Map action to [vx, vy, vz] with scaling and clamping |
 | `clamp_action` | Clamp action to limits |
 
 ## `to_control(action; scale, ctrl_lim)`

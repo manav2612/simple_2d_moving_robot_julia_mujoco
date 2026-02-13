@@ -12,6 +12,8 @@ Connects belief, policy, and action: computes control from belief and goal, and 
 
 ## `compute_control(belief, goal; γ, β, ctrl_scale)`
 
+Belief and goal are 3D position vectors [x, y, z].
+
 1. Call `Policy.select_action` to get the best action
 2. Convert action to control with `Action.to_control`
 3. Compute EFE for the chosen action

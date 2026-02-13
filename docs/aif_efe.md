@@ -16,5 +16,5 @@ Computes Expected Free Energy for policy selection. Lower EFE = better action.
 
 EFE = γ * ||μ + u - goal||² - β * Σ log(σ²)
 
-- Pragmatic: penalizes distance to goal
+- Pragmatic: penalizes 3D Euclidean distance to goal
 - Epistemic: favors uncertainty reduction

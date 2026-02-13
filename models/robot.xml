@@ -1,4 +1,4 @@
-<mujoco model="aif_simple_robot">
+<mujoco model="aif_simple_robot_3d">
   <compiler angle="radian" coordinate="local"/>
   <option timestep="0.01" gravity="0 0 0"/>
 
@@ -9,10 +9,11 @@
   <worldbody>
     <geom name="ground" type="plane" size="10 10 0.05" rgba="0.95 0.95 0.95 1"/>
     <light name="main" pos="1 1 2" dir="-1 -1 -1"/>
-    <site name="target" pos="0.8 0.8 0.05" size="0.08" rgba="0.2 0.9 0.2 0.9"/>
-    <body name="agent" pos="0 0 0.05">
+    <site name="target" pos="0.8 0.8 0.4" size="0.08" rgba="0.2 0.9 0.2 0.9"/>
+    <body name="agent" pos="0 0 0.2">
       <joint name="slide_x" type="slide" axis="1 0 0"/>
       <joint name="slide_y" type="slide" axis="0 1 0"/>
+      <joint name="slide_z" type="slide" axis="0 0 1"/>
       <geom name="agent_body" type="sphere" size="0.06" rgba="0.2 0.4 0.9 1"/>
       <site name="agent_site" pos="0 0 0" size="0.015" rgba="1 0 0 1"/>
     </body>
@@ -21,5 +22,6 @@
   <actuator>
     <position name="px" joint="slide_x" kp="200" ctrllimited="true" ctrlrange="-10 10"/>
     <position name="py" joint="slide_y" kp="200" ctrllimited="true" ctrlrange="-10 10"/>
+    <position name="pz" joint="slide_z" kp="200" ctrllimited="true" ctrlrange="-10 10"/>
   </actuator>
 </mujoco>

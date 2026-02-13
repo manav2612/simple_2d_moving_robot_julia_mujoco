@@ -13,5 +13,5 @@ Simple logging for simulation steps and summaries using Printf.
 
 ## Functions
 
-- `log_step(step, pos, goal, belief_mean, efe)` — prints step index, position, goal, belief, EFE
+- `log_step(step, pos, goal, belief_mean, efe)` — prints step index, 3D position (x,y,z), goal, belief, EFE
 - `log_summary(total_steps, final_dist, converged)` — prints total steps, final distance, convergence

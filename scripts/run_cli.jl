@@ -10,11 +10,13 @@ using MuJoCo
 using Random
 using Plots
 
-# Workspace / goal bounds chosen to stay inside Panda arm's reachable region.
+# Workspace bounds chosen to stay inside Panda arm's reachable region.
 const PANDA_X_MIN = 0.2
 const PANDA_X_MAX = 0.8
 const PANDA_Y_MIN = -0.4
 const PANDA_Y_MAX = 0.4
+const PANDA_Z_MIN = 0.1
+const PANDA_Z_MAX = 0.5
 
 function _require_id_local(model::MuJoCo.Model, objtype, name::AbstractString)
     id = MuJoCo.mj_name2id(model, Cint(objtype), name)
@@ -58,32 +60,29 @@ function render_panda_arm_from_history(history, params)
     mocap_id < 0 && error("Body 'panda_mocap' is not a mocap body (body_mocapid < 0)")
     mocap_row = mocap_id + 1
 
-    # Hard-coded third dimension (z) for the AIF 2D positions
-    z_height = 0.25
     gain = 0.02
     stop_dist = 0.02
 
-    # Map each 2D AIF point directly into the Panda workspace,
-    # only clamping to the arm's safe XY range.
+    # Map each 3D AIF point into the Panda workspace, clamping to arm's reachable region.
     panda_traj = Vector{Vector{Float64}}(undef, length(positions))
     for (i, p) in enumerate(positions)
         x = clamp(p[1], PANDA_X_MIN, PANDA_X_MAX)
         y = clamp(p[2], PANDA_Y_MIN, PANDA_Y_MAX)
-        panda_traj[i] = [x, y]
+        z = clamp(p[3], PANDA_Z_MIN, PANDA_Z_MAX)
+        panda_traj[i] = [x, y, z]
     end
 
     # Start mocap at the first target point so motion begins smoothly.
-    first_xy = panda_traj[1]
+    first_xyz = panda_traj[1]
     @views begin
-        data.mocap_pos[mocap_row, 1] = first_xy[1]
-        data.mocap_pos[mocap_row, 2] = first_xy[2]
-        data.mocap_pos[mocap_row, 3] = z_height
+        data.mocap_pos[mocap_row, 1] = first_xyz[1]
+        data.mocap_pos[mocap_row, 2] = first_xyz[2]
+        data.mocap_pos[mocap_row, 3] = first_xyz[3]
     end
 
     PANDA_VIS_STATE[] = Dict(
         :traj => panda_traj,
         :idx => 1,
-        :z => z_height,
         :gain => gain,
         :stop_dist => stop_dist,
         :mocap_row => mocap_row,
@@ -102,9 +101,9 @@ function render_panda_arm_from_history(history, params)
             return
         end
 
-        # Current 2D position already mapped into Panda's reachable XY workspace
-        pos2d = traj[idx]
-        target = [pos2d[1], pos2d[2], s[:z]]
+        # Current 3D position already mapped into Panda's reachable workspace
+        pos3d = traj[idx]
+        target = [pos3d[1], pos3d[2], pos3d[3]]
 
         r = s[:mocap_row]
         mp = @views collect(d.mocap_pos[r, :])
@@ -152,13 +151,13 @@ function _mujoco_controller!(m, d)
     rng = s[:rng]
     history = s[:history]
 
-    pos = [d.qpos[1], d.qpos[2]]
+    pos = [d.qpos[1], d.qpos[2], d.qpos[3]]
     obs_noise = params[:obs_noise]
     # Initialize internal counters/state on first call
     if !haskey(s, :phys_step)
         s[:phys_step] = 0
-        s[:last_ctrl] = [0.0, 0.0]
-        s[:last_action] = [0.0, 0.0]
+        s[:last_ctrl] = [0.0, 0.0, 0.0]
+        s[:last_action] = [0.0, 0.0, 0.0]
         s[:last_efe] = 0.0
     end
 
@@ -178,9 +177,9 @@ function _mujoco_controller!(m, d)
             ctrl_scale = params[:ctrl_scale]
         )
 
-        # Predict belief forward using the chosen action (matches run_simulation)
+        # Predict belief using actual applied control (ctrl), not raw action
         try
-            AIFMuJoCoRobot.predict_belief!(belief, result.action; process_noise = params[:process_noise])
+            AIFMuJoCoRobot.predict_belief!(belief, result.ctrl; process_noise = params[:process_noise])
         catch err
             @warn "predict_belief! failed in visualiser" error=err
         end
@@ -194,10 +193,11 @@ function _mujoco_controller!(m, d)
     target = pos .+ s[:last_ctrl]
     d.ctrl[1] = clamp(target[1], -10.0, 10.0)
     d.ctrl[2] = clamp(target[2], -10.0, 10.0)
+    d.ctrl[3] = clamp(target[3], -10.0, 10.0)
 
     # After a full control block has been executed, read observation and update belief
     if nspc <= 1 || (s[:phys_step] % nspc == 0)
-        obs = pos .+ (obs_noise > 0 ? sqrt(obs_noise) .* randn(rng, 2) : zeros(2))
+        obs = pos .+ (obs_noise > 0 ? sqrt(obs_noise) .* randn(rng, 3) : zeros(3))
         AIFMuJoCoRobot.update_belief!(belief, obs; obs_noise = obs_noise)
 
         # record history at control-step resolution (after execution)
@@ -223,6 +223,14 @@ function parse_float_pair(args, i)
     return (x, y), i+2
 end
 
+"""Parse three floats (x, y, z) for 3D goal/init."""
+function parse_float_triple(args, i)
+    x = parse(Float64, args[i])
+    y = parse(Float64, args[i+1])
+    z = parse(Float64, args[i+2])
+    return [x, y, z], i+3
+end
+
 function parse_float_n(args, i, n)
     vals = Float64[]
     for j in 0:(n-1)
@@ -242,7 +250,7 @@ function parse_args()
         :β => cfg.β,
         :ctrl_scale => cfg.ctrl_scale,
         :nsteps_per_ctrl => cfg.nsteps_per_ctrl,
-        :process_noise => 0.01,
+        :process_noise => cfg.process_noise,
         :seed => cfg.seed,
         :verbose => cfg.verbose,
         :save_plot => "",
@@ -257,13 +265,9 @@ function parse_args()
     while i <= length(args)
         a = args[i]
         if a == "--goal"
-            (gx, gy), i = parse_float_pair(args, i+1)
-            # Keep AIF behaviour unchanged: store goal exactly as provided.
-            params[:goal] = [gx, gy]
+            params[:goal], i = parse_float_triple(args, i+1)
         elseif a == "--init"
-            (ix, iy), i = parse_float_pair(args, i+1)
-            # Keep AIF behaviour unchanged: store init_pos exactly as provided.
-            params[:init_pos] = [ix, iy]
+            params[:init_pos], i = parse_float_triple(args, i+1)
         elseif a == "--obs_noise"
             params[:obs_noise] = parse(Float64, args[i+1]); i += 2
         elseif a == "--ctrl_scale"
@@ -319,8 +323,8 @@ end
 
 function main()
     params = parse_args()
-    @printf("Running simulation with goal=(%.3f,%.3f) init=(%.3f,%.3f) ctrl_scale=%.3f obs_noise=%.4f steps=%d\n",
-        params[:goal][1], params[:goal][2], params[:init_pos][1], params[:init_pos][2], params[:ctrl_scale], params[:obs_noise], params[:steps])
+    @printf("Running simulation with goal=(%.3f,%.3f,%.3f) init=(%.3f,%.3f,%.3f) ctrl_scale=%.3f obs_noise=%.4f steps=%d\n",
+        params[:goal][1], params[:goal][2], params[:goal][3], params[:init_pos][1], params[:init_pos][2], params[:init_pos][3], params[:ctrl_scale], params[:obs_noise], params[:steps])
 
     # Open a small log file so messages are preserved when a visualiser window hijacks the terminal.
     log_path = params[:save_plot] != "" ? params[:save_plot] * ".log" : joinpath(@__DIR__, "run_cli.log")
@@ -341,12 +345,13 @@ function main()
                     pos = candidate.history.positions
                     xs = [p[1] for p in pos]
                     ys = [p[2] for p in pos]
-                    plt = plot(xs, ys, label = "Robot path", linewidth = 2, legend = :topright)
+                    zs = [p[3] for p in pos]
+                    plt = plot(xs, ys, zs, label = "Robot path", linewidth = 2, legend = :topright)
                     if length(xs) > 0
-                        scatter!(plt, [xs[1]], [ys[1]], label = "Start", markersize = 8)
+                        scatter!(plt, [xs[1]], [ys[1]], [zs[1]], label = "Start", markersize = 8)
                     end
-                    scatter!(plt, [params[:goal][1]], [params[:goal][2]], label = "Goal", markersize = 10)
-                    xlabel!(plt, "x"); ylabel!(plt, "y"); title!(plt, "AIF Robot Trajectory")
+                    scatter!(plt, [params[:goal][1]], [params[:goal][2]], [params[:goal][3]], label = "Goal", markersize = 10)
+                    xlabel!(plt, "x"); ylabel!(plt, "y"); zlabel!(plt, "z"); title!(plt, "AIF Robot Trajectory (3D)")
                     savefig(plt, params[:save_plot])
                     try
                         println(log_io, "Saved plot to: " * params[:save_plot]); flush(log_io)
@@ -465,16 +470,17 @@ function main()
             data = MuJoCo.init_data(model)
             MuJoCo.reset!(model, data)
 
-            # set initial position
+            # set initial position (x, y, z)
             q = collect(data.qpos)
             q[1] = params[:init_pos][1]
             q[2] = params[:init_pos][2]
+            q[3] = params[:init_pos][3]
             data.qpos[:] = q
 
             Random.seed!(params[:seed])
             rng = Random.default_rng()
 
-            belief = AIFMuJoCoRobot.init_belief(params[:init_pos], [0.01, 0.01])
+            belief = AIFMuJoCoRobot.init_belief(params[:init_pos], [0.01, 0.01, 0.01])
             obs_noise = params[:obs_noise]
             ctrl_scale = params[:ctrl_scale]
 
@@ -518,7 +524,7 @@ function main()
                     if step > last_step && length(hist[:positions]) >= 1
                         pos = hist[:positions][end]
                         dist = sqrt(sum((pos .- params[:goal]).^2))
-                        logmsg("[Step ", step, "] pos=(", round(pos[1],digits=3), ", ", round(pos[2],digits=3), ") goal=(", params[:goal][1], ", ", params[:goal][2], ") dist=", round(dist,digits=4))
+                        logmsg("[Step ", step, "] pos=(", round(pos[1],digits=3), ", ", round(pos[2],digits=3), ", ", round(pos[3],digits=3), ") goal=(", params[:goal][1], ", ", params[:goal][2], ", ", params[:goal][3], ") dist=", round(dist,digits=4))
                         last_step = step
                     end
                     # exit when requested steps reached or visualiser task finished
@@ -596,10 +602,11 @@ function main()
             pos = res.history.positions
             xs = [p[1] for p in pos]
             ys = [p[2] for p in pos]
-            plt = plot(xs, ys, label = "Robot path", linewidth = 2, legend = :topright)
-            scatter!(plt, [xs[1]], [ys[1]], label = "Start", markersize = 8)
-            scatter!(plt, [params[:goal][1]], [params[:goal][2]], label = "Goal", markersize = 10)
-            xlabel!(plt, "x"); ylabel!(plt, "y"); title!(plt, "AIF Robot Trajectory")
+            zs = [p[3] for p in pos]
+            plt = plot(xs, ys, zs, label = "Robot path", linewidth = 2, legend = :topright)
+            scatter!(plt, [xs[1]], [ys[1]], [zs[1]], label = "Start", markersize = 8)
+            scatter!(plt, [params[:goal][1]], [params[:goal][2]], [params[:goal][3]], label = "Goal", markersize = 10)
+            xlabel!(plt, "x"); ylabel!(plt, "y"); zlabel!(plt, "z"); title!(plt, "AIF Robot Trajectory (3D)")
             savefig(plt, params[:save_plot])
             try
                 println("Saved plot to: ", params[:save_plot])

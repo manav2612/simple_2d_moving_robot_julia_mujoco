@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Represents the agent's belief over 2D position as a Gaussian with diagonal covariance.
+Represents the agent's belief over 3D position as a Gaussian with diagonal covariance.
 
 ## Exports
 
@@ -15,8 +15,8 @@ Represents the agent's belief over 2D position as a Gaussian with diagonal covar
 
 ## BeliefState
 
-- `mean`: [x, y]
-- `cov`: [σ²_x, σ²_y] diagonal covariance
+- `mean`: [x, y, z]
+- `cov`: [σ²_x, σ²_y, σ²_z] diagonal covariance
 
 ## Update
 

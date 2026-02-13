@@ -10,9 +10,9 @@ export log_step, log_summary
 """Log a single simulation step."""
 function log_step(step::Int, pos::AbstractVector, goal::AbstractVector, belief_mean::AbstractVector, efe::Real)
     dist = sqrt(sum((pos .- goal) .^ 2))
-    @printf("[Step %4d] pos=(%.3f, %.3f) goal=(%.3f, %.3f) dist=%.4f belief=(%.3f, %.3f) EFE=%.4f\n",
-            step, pos[1], pos[2], goal[1], goal[2], dist,
-            belief_mean[1], belief_mean[2], efe)
+    @printf("[Step %4d] pos=(%.3f, %.3f, %.3f) goal=(%.3f, %.3f, %.3f) dist=%.4f belief=(%.3f, %.3f, %.3f) EFE=%.4f\n",
+            step, pos[1], pos[2], pos[3], goal[1], goal[2], goal[3], dist,
+            belief_mean[1], belief_mean[2], belief_mean[3], efe)
 end
 
 """Log simulation summary."""

@@ -1,5 +1,5 @@
 """
-AIFMuJoCoRobot: Active Inference control for a simple 2D MuJoCo robot.
+AIFMuJoCoRobot: Active Inference control for a simple 3D MuJoCo robot.
 """
 module AIFMuJoCoRobot
 
@@ -50,8 +50,8 @@ end
 """Run the Active Inference + MuJoCo simulation."""
 function run_simulation(; 
     steps::Int = 100,
-    goal::Vector{Float64} = [0.8, 0.8],
-    init_pos::Vector{Float64} = [-0.5, -0.5],
+    goal::Vector{Float64} = [0.8, 0.8, 0.4],
+    init_pos::Vector{Float64} = [-0.5, -0.5, 0.2],
     obs_noise::Real = 0.01,
     γ::Real = 1.0,
     β::Real = 0.1,
@@ -59,7 +59,7 @@ function run_simulation(;
     nsteps_per_ctrl::Int = 5,
     model_path::String = default_model_path(),
     seed::Union{Int,Nothing} = 42,
-    process_noise::Real = 0.01,
+    process_noise = 0.005,
     verbose::Bool = true
 )
     seed !== nothing && Random.seed!(seed)
@@ -68,7 +68,7 @@ function run_simulation(;
     env = load_env(model_path; goal = goal)
     reset!(env; init_pos = init_pos)
 
-    belief = init_belief(init_pos, [0.01, 0.01])
+    belief = init_belief(init_pos, [0.01, 0.01, 0.01])
     history = (
         positions = Vector{Vector{Float64}}(),
         beliefs_mean = Vector{Vector{Float64}}(),
@@ -80,8 +80,8 @@ function run_simulation(;
         result = compute_control(belief, goal; γ = γ, β = β, ctrl_scale = ctrl_scale)
         ctrl, action, efe_val = result.ctrl, result.action, result.efe
 
-        # Predict belief forward using chosen action (time/prior update)
-        predict_belief!(belief, action; process_noise = process_noise)
+        # Predict belief using actual applied control (ctrl = scaled action), not raw action
+        predict_belief!(belief, ctrl; process_noise = process_noise)
 
         # Execute control in the MuJoCo environment
         step!(env, ctrl; nsteps = nsteps_per_ctrl)

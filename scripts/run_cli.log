@@ -1,2 +1,14 @@
 Done. Converged: true, steps: 186, final_dist: 0.047488
 No candidate history available to save plot.
+Done. Converged: false, steps: 500, final_dist: 2.219382
+No candidate history available to save plot.
+Done. Converged: false, steps: 1500, final_dist: 0.308035
+No candidate history available to save plot.
+Render flag enabled: attempting to use MuJoCo visualiser (render=true).
+No DISPLAY detected, running headless simulation instead of visualiser.
+Done. Converged: false, steps: 2, final_dist: 1.353068
+No candidate history available to save plot.
+Render flag enabled: attempting to use MuJoCo visualiser (render=true).
+No DISPLAY detected, running headless simulation instead of visualiser.
+Done. Converged: false, steps: 2, final_dist: 1.345074
+No candidate history available to save plot.

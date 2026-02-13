@@ -2,13 +2,13 @@ using Test
 using AIFMuJoCoRobot
 
 @testset "Belief predict and update" begin
-    # initialize belief
-    prior_mean = [0.0, 0.0]
-    prior_cov = [0.1, 0.2]
+    # initialize belief (3D)
+    prior_mean = [0.0, 0.0, 0.0]
+    prior_cov = [0.1, 0.2, 0.15]
     b = AIFMuJoCoRobot.init_belief(prior_mean, prior_cov)
 
     # predict forward with an action
-    action = [0.5, -0.2]
+    action = [0.5, -0.2, 0.1]
     process_noise = 0.05
     AIFMuJoCoRobot.predict_belief!(b, action; process_noise = process_noise)
 

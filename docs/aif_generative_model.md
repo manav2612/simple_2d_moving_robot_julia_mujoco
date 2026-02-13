@@ -14,8 +14,8 @@ Defines transition and observation models for Active Inference.
 
 ## Transition
 
-s_{t+1} = s_t + u_t (additive dynamics)
+s_{t+1} = s_t + u_t (additive dynamics; state and action are 3D [x, y, z])
 
 ## Observation
 
-o_t = s_t + noise (Gaussian likelihood)
+o_t = s_t + noise (Gaussian likelihood; observation is 3D)
