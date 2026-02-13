@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Extracts observations from MuJoCo state, with optional noise for realism.
+Extracts observations from MuJoCo state, with optional per-dimension noise.
 
 ## Exports
 
@@ -14,5 +14,6 @@ Extracts observations from MuJoCo state, with optional noise for realism.
 ## `read_observation(qpos; obs_noise, rng)`
 
 - Reads position from `qpos[1:3]`
-- If `obs_noise > 0`, adds `sqrt(obs_noise) * randn(3)` for noisy observations
+- `obs_noise`: scalar or `[σ²_x, σ²_y, σ²_z]` — variance per axis
+- Adds `sqrt(σ²_i) * randn()` per dimension when σ²_i > 0
 - Returns [x, y, z] as the observation

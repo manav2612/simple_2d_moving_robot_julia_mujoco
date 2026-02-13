@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Connects belief, policy, and action: computes control from belief and goal, and returns EFE for logging.
+Connects belief, policy, and action: computes control from belief and goal, and returns EFE for logging. Belief prediction uses **actual applied control** (ctrl), not raw action.
 
 ## Exports
 
@@ -10,11 +10,13 @@ Connects belief, policy, and action: computes control from belief and goal, and 
 |--------|-------------|
 | `compute_control` | Main entry: belief + goal → control + EFE |
 
-## `compute_control(belief, goal; γ, β, ctrl_scale)`
+## `compute_control(belief, goal; γ, β, ctrl_scale, axis_weights, ctrl_lim)`
 
 Belief and goal are 3D position vectors [x, y, z].
 
-1. Call `Policy.select_action` to get the best action
+1. Call `Policy.select_action` (with `ctrl_scale` for correct EFE prediction)
 2. Convert action to control with `Action.to_control`
 3. Compute EFE for the chosen action
 4. Return `(ctrl, action, efe)`
+
+The simulation loop calls `predict_belief!(belief, ctrl)` — using the scaled control, not the raw action — so the belief matches the actual dynamics.

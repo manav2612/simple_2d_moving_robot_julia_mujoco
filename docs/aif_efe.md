@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Computes Expected Free Energy for policy selection. Lower EFE = better action.
+Computes Expected Free Energy for policy selection. Lower EFE = better action. All terms use explicit 3D (x, y, z) per-dimension formulation.
 
 ## Exports
 
@@ -14,7 +14,8 @@ Computes Expected Free Energy for policy selection. Lower EFE = better action.
 
 ## Formula
 
-EFE = γ * ||μ + u - goal||² - β * Σ log(σ²)
+EFE = pragmatic (goal-seeking) − epistemic (exploration)
 
-- Pragmatic: penalizes 3D Euclidean distance to goal
-- Epistemic: favors uncertainty reduction
+- **Pragmatic**: `γ * Σ w_i (pred_i - goal_i)²` where `pred = μ + clamp(action × ctrl_scale, -ctrl_lim, ctrl_lim)`. Uses actual applied control for correct prediction.
+- **Epistemic**: `−β * Σ log(σ²_i)` with clamped covariance for numerical stability.
+- **axis_weights**: Optional per-axis weights `[w_x, w_y, w_z]` for goal distance.

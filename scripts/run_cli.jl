@@ -34,18 +34,30 @@ function render_panda_arm_from_history(history, params)
         return
     end
 
-    # Load Panda model (same as Python / move_panda_arm.jl)
+    # Scene: red object at init_pos, green box at goal. After trajectory, red on top of box.
+    init_pos = params[:init_pos]
+    goal = params[:goal]
+    init_str = @sprintf("%.4f %.4f %.4f", init_pos[1], init_pos[2], init_pos[3])
+    goal_str = @sprintf("%.4f %.4f %.4f", goal[1], goal[2], goal[3])
+
     MuJoCo.init_visualiser()
-    panda_xml = normpath(joinpath(@__DIR__, "..", "..", "panda_try.xml"))
-    @printf("Rendering Panda arm using trajectory from %d AIF steps\n", length(positions))
+    scene_dir = normpath(joinpath(@__DIR__, "..", ".."))
+    scene_path = joinpath(scene_dir, "panda_render_scene.xml")
+    xml_str = read(scene_path, String)
+    xml_str = replace(xml_str, "__INIT_POS__" => init_str, "__GOAL_POS__" => goal_str)
+    tmp_xml = joinpath(scene_dir, "panda_render_scene_tmp.xml")
+    write(tmp_xml, xml_str)
+
+    @printf("Rendering Panda arm: red at init=(%.2f,%.2f,%.2f), green box at goal=(%.2f,%.2f,%.2f)\n",
+            init_pos[1], init_pos[2], init_pos[3], goal[1], goal[2], goal[3])
+    @printf("Trajectory: %d AIF steps\n", length(positions))
     flush(stdout)
 
-    model = MuJoCo.load_model(panda_xml)
+    model = MuJoCo.load_model(tmp_xml)
+    rm(tmp_xml; force = true)
     data  = MuJoCo.init_data(model)
     MuJoCo.reset!(model, data)
 
-    # Make the arm follow mocap without fighting the equality constraint:
-    # initialise joint actuators to current joint positions.
     MuJoCo.forward!(model, data)
     for i in 1:7
         actname = "actuator$(i)"
@@ -60,19 +72,32 @@ function render_panda_arm_from_history(history, params)
     mocap_id < 0 && error("Body 'panda_mocap' is not a mocap body (body_mocapid < 0)")
     mocap_row = mocap_id + 1
 
+    red_body_id = _require_id_local(model, MuJoCo.mjOBJ_BODY, "red_object")
+    red_mocap_id = Int(model.body_mocapid[red_body_id + 1])
+    red_mocap_id < 0 && error("Body 'red_object' is not a mocap body")
+    red_mocap_row = red_mocap_id + 1
+
     gain = 0.02
     stop_dist = 0.02
 
-    # Map each 3D AIF point into the Panda workspace, clamping to arm's reachable region.
-    panda_traj = Vector{Vector{Float64}}(undef, length(positions))
+    # Hardcoded final position: red object on top of green box (box half-size 0.04, sphere radius 0.025)
+    box_half = 0.04
+    sphere_r = 0.025
+    red_on_box = [goal[1], goal[2], goal[3] + box_half + sphere_r]
+
+    # Prepend init (clamped) so arm first goes to red ball for pickup, then follows AIF path
+    init_clamped = [clamp(init_pos[1], PANDA_X_MIN, PANDA_X_MAX),
+                   clamp(init_pos[2], PANDA_Y_MIN, PANDA_Y_MAX),
+                   clamp(init_pos[3], PANDA_Z_MIN, PANDA_Z_MAX)]
+    panda_traj = Vector{Vector{Float64}}(undef, length(positions) + 1)
+    panda_traj[1] = init_clamped
     for (i, p) in enumerate(positions)
         x = clamp(p[1], PANDA_X_MIN, PANDA_X_MAX)
         y = clamp(p[2], PANDA_Y_MIN, PANDA_Y_MAX)
         z = clamp(p[3], PANDA_Z_MIN, PANDA_Z_MAX)
-        panda_traj[i] = [x, y, z]
+        panda_traj[i + 1] = [x, y, z]
     end
 
-    # Start mocap at the first target point so motion begins smoothly.
     first_xyz = panda_traj[1]
     @views begin
         data.mocap_pos[mocap_row, 1] = first_xyz[1]
@@ -86,6 +111,9 @@ function render_panda_arm_from_history(history, params)
         :gain => gain,
         :stop_dist => stop_dist,
         :mocap_row => mocap_row,
+        :red_mocap_row => red_mocap_row,
+        :red_on_box => red_on_box,
+        :place_gain => 0.03,
         :vis_step => 0,
         :last_logged_idx => 0,
     )
@@ -97,42 +125,53 @@ function render_panda_arm_from_history(history, params)
         traj = s[:traj]
         idx = s[:idx]
         s[:vis_step] += 1
-        if idx > length(traj)
-            return
-        end
 
-        # Current 3D position already mapped into Panda's reachable workspace
-        pos3d = traj[idx]
-        target = [pos3d[1], pos3d[2], pos3d[3]]
-
-        r = s[:mocap_row]
-        mp = @views collect(d.mocap_pos[r, :])
-
-        # Move mocap position toward target
-        dx = target .- mp
-        if sqrt(sum(dx.^2)) > s[:stop_dist]
-            mp .+= s[:gain] .* dx
+        # Panda arm: follow AIF trajectory
+        if idx <= length(traj)
+            pos3d = traj[idx]
+            target = [pos3d[1], pos3d[2], pos3d[3]]
+            r = s[:mocap_row]
+            mp = @views collect(d.mocap_pos[r, :])
+            dx = target .- mp
+            if sqrt(sum(dx.^2)) > s[:stop_dist]
+                mp .+= s[:gain] .* dx
+            else
+                s[:idx] = idx + 1
+                @printf("Panda idx %d/%d | target=(%.3f, %.3f, %.3f)\n",
+                        idx, length(traj), target[1], target[2], target[3])
+                flush(stdout)
+            end
+            @views for j in 1:3
+                d.mocap_pos[r, j] = mp[j]
+            end
+            # Pickup + carry: red ball follows arm only after arm reaches init (idx>=2)
+            if idx >= 2
+                rr = s[:red_mocap_row]
+                @views for j in 1:3
+                    d.mocap_pos[rr, j] = mp[j]
+                end
+            end
         else
-            s[:idx] = idx + 1
-            # Log when we advance to the next target, to mirror AIF logging style.
-            @printf("Panda idx %d/%d | target=(%.3f, %.3f, %.3f)\n",
-                    idx, length(traj), target[1], target[2], target[3])
-            flush(stdout)
-        end
-
-        @views for j in 1:3
-            d.mocap_pos[r, j] = mp[j]
+            # Trajectory done: place red object on top of green box (hardcoded grasper)
+            rr = s[:red_mocap_row]
+            rp = @views collect(d.mocap_pos[rr, :])
+            dest = s[:red_on_box]
+            dr = dest .- rp
+            if sqrt(sum(dr.^2)) > 0.005
+                rp .+= s[:place_gain] .* dr
+                @views for j in 1:3
+                    d.mocap_pos[rr, j] = rp[j]
+                end
+            end
         end
 
         PANDA_VIS_STATE[] = s
         return nothing
     end
 
-    println("Launching Panda arm visualiser from AIF trajectory. Close window to exit.")
+    println("Launching Panda arm visualiser. Red at init, green box at goal. After trajectory, red placed on box.")
     flush(stdout)
 
-    # Use the same pattern as the main visualiser: invoke via Base.invokelatest
-    # so we match the extension method signature and avoid world-age issues.
     Base.invokelatest(MuJoCo.visualise!, model, data; controller = _panda_controller!)
 end
 
