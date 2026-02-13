@@ -27,7 +27,7 @@ julia --project=. scripts/run_cli.jl --goal <x> <y> <z> --init <x> <y> <z> [opti
 | `--goal` | Goal position (x y z) | 0.8 0.8 0.4 |
 | `--init` | Initial position (x y z) | -0.5 -0.5 0.2 |
 | `--steps` | Max simulation steps | 500 |
-| `--ctrl_scale` | Control scaling | 5.0 |
+| `--ctrl_scale` | Control scaling | 4.0 |
 | `--obs_noise` | Observation variance (σ²) | 0.01 |
 | `--process_noise` | Process noise variance | 0.005 |
 | `--save_plot` | Path to save trajectory plot | (none) |
@@ -40,7 +40,8 @@ Replays the AIF trajectory on a Panda arm with a pick-and-place scene:
 
 - **Red sphere** at initial position (from `--init`)
 - **Green box** at goal position (from `--goal`)
-- After trajectory completes, red object is placed on top of the green box
+
+**Sequence**: (1) Arm moves to init → pickup red ball. (2) Red ball follows arm along AIF trajectory → carry. (3) Red ball placed on top of green box → drop. Trajectory is prepended with init so the arm first goes to the red ball.
 
 **Output bounds** (Panda arm workspace; trajectory is clamped):
 
@@ -53,7 +54,8 @@ Replays the AIF trajectory on a Panda arm with a pick-and-place scene:
 **Recommended input bounds** for `--goal` and `--init`: same as above.
 
 ```bash
-julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500 --ctrl_scale 5.0 --save_plot trajectory.png --renderarm
+# Use init within Panda bounds (0.2–0.8, -0.4–0.4, 0.1–0.5) for pickup to work
+julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 --steps 500 --ctrl_scale 5.0 --save_plot trajectory.png --renderarm
 ```
 
 ## MuJoCo GUI Viewer
@@ -86,6 +88,7 @@ Requires a display (WSLg or X11 on WSL2).
 
 ## Per-File Documentation
 
+- `docs/run_cli.md` - CLI usage and render arm (pickup, carry, drop)
 - `docs/aif_beliefs.md` - Belief state (per-dimension noise, covariance bounds)
 - `docs/aif_efe.md` - Expected Free Energy (ctrl_scale in prediction)
 - `docs/aif_policy.md` - Policy selection (5×5×5 action set)

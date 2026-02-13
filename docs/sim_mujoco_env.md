@@ -18,7 +18,7 @@ Wraps MuJoCo for the 3D robot: load model, reset, step, and read state.
 ## Model layout
 
 - `qpos[1]`, `qpos[2]`, `qpos[3]`: x, y, z (slide joints)
-- `ctrl[1]`, `ctrl[2]`, `ctrl[3]`: velocity commands for x, y, z
+- `ctrl[1]`, `ctrl[2]`, `ctrl[3]`: displacement (target = pos + ctrl) for x, y, z
 
 ## `step!(env, ctrl; nsteps)`
 
