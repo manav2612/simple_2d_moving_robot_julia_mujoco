@@ -24,6 +24,10 @@ using .Action
 include("aif/policy.jl")  # policy.jl uses EFE, Beliefs from parent scope
 using .Policy
 
+# RxInfer streaming filter (optional backend)
+include("aif/rxinfer_filter.jl")
+using .RxInferFilter
+
 # Sim
 include("sim/sensors.jl")
 include("sim/mujoco_env.jl")
@@ -47,7 +51,11 @@ function default_model_path()
     return normpath(joinpath(@__DIR__, "..", "models", "robot.xml"))
 end
 
-"""Run the Active Inference + MuJoCo simulation."""
+"""Run the Active Inference + MuJoCo simulation.
+
+Set `inference_backend = :rxinfer` to use the RxInfer streaming filter
+instead of the built-in analytic diagonal-Gaussian updates (default `:analytic`).
+"""
 function run_simulation(; 
     steps::Int = 100,
     goal::Vector{Float64} = [0.8, 0.8, 0.4],
@@ -60,7 +68,8 @@ function run_simulation(;
     model_path::String = default_model_path(),
     seed::Union{Int,Nothing} = 42,
     process_noise = 0.005,
-    verbose::Bool = true
+    verbose::Bool = true,
+    inference_backend::Symbol = :analytic,
 )
     seed !== nothing && Random.seed!(seed)
     rng = Random.default_rng()
@@ -76,30 +85,53 @@ function run_simulation(;
         efe_history = Float64[],
     )
 
-    for t in 1:steps
-        result = compute_control(belief, goal; γ = γ, β = β, ctrl_scale = ctrl_scale)
-        ctrl, action, efe_val = result.ctrl, result.action, result.efe
+    # Optionally create the RxInfer streaming filter
+    rxfilter = nothing
+    if inference_backend == :rxinfer
+        rxfilter = RxInferFilter.init_rxinfer_filter(
+            init_pos, [0.01, 0.01, 0.01];
+            obs_noise = obs_noise, process_noise = process_noise,
+        )
+    end
 
-        # Predict belief using actual applied control (ctrl = scaled action), not raw action
-        predict_belief!(belief, ctrl; process_noise = process_noise)
+    try
+        for t in 1:steps
+            result = compute_control(belief, goal; γ = γ, β = β, ctrl_scale = ctrl_scale)
+            ctrl, action, efe_val = result.ctrl, result.action, result.efe
 
-        # Execute control in the MuJoCo environment
-        step!(env, ctrl; nsteps = nsteps_per_ctrl)
-        pos = get_position(env)
-        obs = read_observation(collect(env.data.qpos); obs_noise = obs_noise, rng = rng)
-        update_belief!(belief, obs; obs_noise = obs_noise)
+            if inference_backend == :rxinfer
+                # Predict + update via RxInfer streaming engine
+                step!(env, ctrl; nsteps = nsteps_per_ctrl)
+                pos = get_position(env)
+                obs = read_observation(collect(env.data.qpos); obs_noise = obs_noise, rng = rng)
+                post_mean, post_var = RxInferFilter.rxinfer_step!(rxfilter, ctrl, obs)
+                belief.mean .= post_mean
+                belief.cov  .= post_var
+            else
+                # Analytic diagonal-Gaussian predict + update (original path)
+                predict_belief!(belief, ctrl; process_noise = process_noise)
+                step!(env, ctrl; nsteps = nsteps_per_ctrl)
+                pos = get_position(env)
+                obs = read_observation(collect(env.data.qpos); obs_noise = obs_noise, rng = rng)
+                update_belief!(belief, obs; obs_noise = obs_noise)
+            end
 
-        push!(history.positions, copy(pos))
-        push!(history.beliefs_mean, copy(belief.mean))
-        push!(history.actions, copy(action))
-        push!(history.efe_history, efe_val)
+            push!(history.positions, copy(pos))
+            push!(history.beliefs_mean, copy(belief.mean))
+            push!(history.actions, copy(action))
+            push!(history.efe_history, efe_val)
 
-        verbose && log_step(t, pos, goal, belief.mean, efe_val)
+            verbose && log_step(t, pos, goal, belief.mean, efe_val)
 
-        dist = sqrt(sum((pos .- goal) .^ 2))
-        if dist < 0.05
-            verbose && log_summary(t, dist, true)
-            return (env = env, belief = belief, history = history, converged = true)
+            dist = sqrt(sum((pos .- goal) .^ 2))
+            if dist < 0.05
+                verbose && log_summary(t, dist, true)
+                return (env = env, belief = belief, history = history, converged = true)
+            end
+        end
+    finally
+        if rxfilter !== nothing
+            RxInferFilter.rxinfer_stop!(rxfilter)
         end
     end
 

@@ -33,6 +33,7 @@ julia --project=. scripts/run_cli.jl --goal <x> <y> <z> --init <x> <y> <z> [opti
 | `--save_plot` | Path to save trajectory plot | (none) |
 | `--render` | Launch MuJoCo visualiser | false |
 | `--renderarm` | Panda arm replay + scene | false |
+| `--backend` | Inference backend: `analytic` or `rxinfer` | analytic |
 
 ## Render Arm (`--renderarm`)
 
@@ -94,12 +95,68 @@ Requires a display (WSLg or X11 on WSL2).
 - `docs/aif_policy.md` - Policy selection (5×5×5 action set)
 - `docs/aif_action.md` - Action representation
 - `docs/aif_generative_model.md` - Generative model
+- `docs/aif_rxinfer_filter.md` - RxInfer streaming filter backend
 - `docs/control_aif_controller.md` - AIF controller
 - `docs/sim_sensors.md` - Sensors
 - `docs/sim_mujoco_env.md` - MuJoCo environment
 - `docs/utils_math.md` - Math utilities
 - `docs/utils_logging.md` - Logging
 - `docs/models.md` - MuJoCo models
+
+## RxInfer Backend (`--backend rxinfer`)
+
+The project supports an optional **RxInfer.jl** streaming inference backend that replaces the built-in analytic diagonal-Gaussian belief updates with reactive message-passing on a factor graph.
+
+### How it works
+
+Each axis (x, y, z) runs an independent 1D linear-Gaussian state-space model via RxInfer's online streaming engine:
+
+- **Transition**: `x ~ Normal(mean = x_prev + u, variance = q)` where `u` is the applied control
+- **Observation**: `y ~ Normal(mean = x, variance = r)`
+- **Autoupdates**: the posterior from each step becomes the prior for the next step
+
+The RxInfer posterior is mathematically equivalent to the analytic Kalman-filter-style update (verified by tests to machine-epsilon accuracy).
+
+### Usage
+
+```bash
+# Run with RxInfer backend (headless)
+julia --project=. scripts/run_cli.jl --backend rxinfer --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500
+
+# Default analytic backend (unchanged behaviour)
+julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500
+```
+
+### Programmatic use
+
+```julia
+using AIFMuJoCoRobot
+
+# Use RxInfer backend in run_simulation
+result = run_simulation(;
+    goal = [0.8, 0.8, 0.4],
+    init_pos = [-0.5, -0.5, 0.2],
+    inference_backend = :rxinfer,   # :analytic (default) or :rxinfer
+)
+```
+
+### Standalone filter (without MuJoCo)
+
+```julia
+using AIFMuJoCoRobot
+
+filter = AIFMuJoCoRobot.RxInferFilter.init_rxinfer_filter(
+    [0.0, 0.0, 0.0], [0.01, 0.01, 0.01];
+    obs_noise = 0.01, process_noise = 0.005,
+)
+post_mean, post_var = AIFMuJoCoRobot.RxInferFilter.rxinfer_step!(filter, ctrl, obs)
+AIFMuJoCoRobot.RxInferFilter.rxinfer_stop!(filter)
+```
+
+### Future extensions (Phase B/C)
+
+- **Online noise learning**: extend the RxInfer model to place Gamma priors on observation/process precision and learn them online with variational constraints.
+- **Bethe Free Energy monitoring**: expose RxInfer's free energy stream for comparing with the hand-coded EFE values used for policy selection.
 
 ## AIF Notes
 
@@ -111,3 +168,4 @@ Requires a display (WSLg or X11 on WSL2).
 ## References
 
 - MuJoCo.jl: https://github.com/JamieMair/MuJoCo.jl
+- RxInfer.jl: https://github.com/ReactiveBayes/RxInfer.jl

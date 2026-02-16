@@ -26,3 +26,7 @@ Represents the agent's belief over 3D position (x, y, z) as a Gaussian with diag
 ## Predict
 
 `predict_belief!(b, ctrl; process_noise)` — Predicts belief using **actual applied control** (not raw action). Uses transition `s' = s + ctrl`. `process_noise` can be scalar or `[σ²_x, σ²_y, σ²_z]`. Covariance is bounded to prevent runaway uncertainty.
+
+## Alternative: RxInfer backend
+
+When `inference_backend = :rxinfer` is set, the simulation loop bypasses `predict_belief!` and `update_belief!` and instead routes both steps through the RxInfer streaming filter (`src/aif/rxinfer_filter.jl`). The RxInfer posterior is written back into `belief.mean` and `belief.cov` so the rest of the pipeline (EFE, policy, controller) remains unchanged. See `docs/aif_rxinfer_filter.md` for details.

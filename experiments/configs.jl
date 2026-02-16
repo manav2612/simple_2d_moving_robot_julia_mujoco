@@ -6,7 +6,10 @@ module Configs
 
 export default_config, config_goal_seeking, config_exploration
 
-"""Default configuration (tuned for stable 3D goal-reaching)."""
+"""Default configuration (tuned for stable 3D goal-reaching).
+
+`inference_backend`: `:analytic` (default) or `:rxinfer` for RxInfer streaming filter.
+"""
 function default_config()
     return (
         steps = 500,
@@ -20,6 +23,7 @@ function default_config()
         nsteps_per_ctrl = 5,
         seed = 42,
         verbose = true,
+        inference_backend = :analytic,
     )
 end
 

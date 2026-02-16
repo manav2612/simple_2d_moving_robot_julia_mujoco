@@ -23,6 +23,7 @@ julia --project=. scripts/run_cli.jl --goal <x> <y> <z> --init <x> <y> <z> [opti
 | `--save_plot` | Path to save trajectory plot | (none) |
 | `--render` | Launch MuJoCo visualiser | false |
 | `--renderarm` | Panda arm replay + pick-and-place scene | false |
+| `--backend` | Inference backend: `analytic` or `rxinfer` | analytic |
 | `--agent_color` | Agent geom color r g b [a] | (default) |
 | `--goal_color` | Goal marker color r g b [a] | (default) |
 | `--seed` | Random seed | 42 |
@@ -68,3 +69,18 @@ julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 --ste
 ```
 
 If init is outside bounds (e.g. -0.5 -0.5 0.2), the arm goes to the clamped position; the red ball stays at init and may not align with the arm for pickup.
+
+## Inference Backend (`--backend`)
+
+Controls which belief-update engine is used during simulation:
+
+- `analytic` (default): built-in closed-form diagonal-Gaussian Kalman update (`predict_belief!` + `update_belief!`)
+- `rxinfer`: RxInfer.jl streaming message-passing filter (per-axis 1D linear-Gaussian state-space model)
+
+Both produce mathematically identical posteriors. The RxInfer backend is useful for experimenting with richer probabilistic models (e.g. online noise learning) in the future.
+
+### Example with RxInfer + Panda arm
+
+```bash
+julia --project=. scripts/run_cli.jl --backend rxinfer --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 --steps 500 --ctrl_scale 5.0 --save_plot trajectory.png --renderarm
+```

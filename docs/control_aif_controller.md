@@ -20,3 +20,7 @@ Belief and goal are 3D position vectors [x, y, z].
 4. Return `(ctrl, action, efe)`
 
 The simulation loop calls `predict_belief!(belief, ctrl)` — using the scaled control, not the raw action — so the belief matches the actual dynamics.
+
+## Inference backend
+
+The controller itself is backend-agnostic: it always consumes `belief.mean` and `belief.cov`. The `inference_backend` kwarg in `run_simulation` controls whether those values come from the analytic update (`predict_belief!` + `update_belief!`) or the RxInfer streaming filter. See `docs/aif_rxinfer_filter.md`.

@@ -296,7 +296,8 @@ function parse_args()
         :render => false,
         :renderarm => false,
         :agent_color => nothing,
-        :goal_color => nothing
+        :goal_color => nothing,
+        :inference_backend => cfg.inference_backend
     )
 
     args = copy(ARGS)
@@ -352,6 +353,9 @@ function parse_args()
         elseif a == "--renderarm"
             # 3D Panda arm visualisation using AIF 2D trajectory (flag, no argument)
             params[:renderarm] = true; i += 1
+        elseif a == "--backend"
+            # Inference backend: "analytic" (default) or "rxinfer"
+            params[:inference_backend] = Symbol(args[i+1]); i += 2
         else
             println("Unknown arg: ", a)
             i += 1
@@ -448,6 +452,7 @@ function main()
                     process_noise = params[:process_noise],
                     seed = params[:seed],
                     verbose = params[:verbose],
+                    inference_backend = params[:inference_backend],
                 )
             else
                 # Launch MuJoCo visualiser with an embedded controller
@@ -608,6 +613,7 @@ function main()
             process_noise = params[:process_noise],
             seed = params[:seed],
             verbose = params[:verbose],
+            inference_backend = params[:inference_backend],
         )
         RES[] = res
     end
