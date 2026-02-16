@@ -34,6 +34,7 @@ INF = "\u221e"
 FORALL = "\u2200"
 NE = "\u2260"
 PROP = "\u221d"
+ALPHA = "\u03b1"
 
 
 class MathPDF(FPDF):
@@ -233,7 +234,7 @@ def build_pdf():
     pdf.equation(f"{SIGMA}{SUP2}'{SUB_I} = clamp({SIGMA}{SUP2}{SUB_I} + q{SUB_I},  COV_MIN,  COV_MAX)")
     pdf.body(
         "Process noise q can be a scalar (applied equally to all axes) or a "
-        "3-vector [q_x, q_y, q_z]. Default: q = 0.005."
+        "3-vector [q_x, q_y, q_z]. Default: q = 0.002."
     )
     pdf.note_box(
         "The prediction uses the actual applied control (ctrl = clamp(action "
@@ -285,7 +286,7 @@ def build_pdf():
     pdf.equation(f"pred{SUB_I} = {MU}{SUB_I} + clamp(a{SUB_I} {TIMES} ctrl_scale, \u2212ctrl_lim, ctrl_lim)")
     pdf.equation(f"G_pragmatic = {GAMMA} {CDOT} {SUM}{SUB_I} w{SUB_I} {CDOT} (pred{SUB_I} \u2212 goal{SUB_I}){SUP2}")
     pdf.body(
-        f"where {GAMMA} is the pragmatic weight (default 1.2) and w{SUB_I} are "
+        f"where {GAMMA} is the pragmatic weight (default 1.5) and w{SUB_I} are "
         f"optional per-axis weights (default [1, 1, 1])."
     )
 
@@ -293,7 +294,7 @@ def build_pdf():
     pdf.body("Encourages uncertainty reduction based on belief entropy:")
     pdf.equation(f"G_epistemic = \u2212{BETA} {CDOT} {SUM}{SUB_I} log({SIGMA}{SUP2}{SUB_I})")
     pdf.body(
-        f"where {BETA} is the epistemic weight (default 0.05). Covariance is "
+        f"where {BETA} is the epistemic weight (default 0.02). Covariance is "
         f"clamped to [1e-8, 100] for numerical stability in the log."
     )
 
@@ -314,15 +315,16 @@ def build_pdf():
 
     pdf.subsection("Action Set")
     pdf.body(
-        f"A = 5{TIMES}5{TIMES}5 = 125 actions. Each axis has 5 velocity "
-        f"levels: {{\u2212s, \u2212s/2, 0, s/2, s}} with step_size s = 0.08."
+        f"A = 7{TIMES}7{TIMES}7 = 343 actions. Each axis has 7 velocity "
+        f"levels: {{\u22123s, \u22122s, \u2212s, 0, s, 2s, 3s}} with step_size s = 0.04."
     )
     pdf.code_block(
-        "A = { [dx, dy, dz] : dx, dy, dz \u2208 {-0.08, -0.04, 0, 0.04, 0.08} }"
+        "A = { [dx, dy, dz] : dx, dy, dz \u2208 {-0.12, -0.08, -0.04, 0, 0.04, 0.08, 0.12} }"
     )
     pdf.body(
-        "The finer grid (compared to a 3-action set) yields smoother trajectories "
-        "and better convergence."
+        "The fine 7-level grid minimises quantization artifacts for smoother "
+        "trajectories. Combined with EMA control smoothing, this produces "
+        "clean, jitter-free curves."
     )
     pdf.body_italic("Source: src/aif/policy.jl")
 
@@ -335,8 +337,20 @@ def build_pdf():
     )
     pdf.equation(f"ctrl{SUB_I} = clamp(a{SUB_I} {TIMES} scale, \u2212ctrl_lim, ctrl_lim)")
     pdf.body(
-        f"Default: scale = 4.0, ctrl_lim = 1.2. This prevents overshooting "
+        f"Default: scale = 3.0, ctrl_lim = 1.2. This prevents overshooting "
         f"while allowing sufficient movement per step."
+    )
+
+    pdf.subsection("EMA Smoothing")
+    pdf.body(
+        "Before applying the control, an Exponential Moving Average (EMA) "
+        "filter smooths consecutive control signals:"
+    )
+    pdf.equation(f"ctrl_smooth = {ALPHA} {CDOT} ctrl_new + (1 \u2212 {ALPHA}) {CDOT} ctrl_prev")
+    pdf.body(
+        f"where {ALPHA} is the smoothing weight (default 0.3). Lower {ALPHA} "
+        f"produces smoother trajectories (more weight on previous control). "
+        f"{ALPHA} = 1.0 disables smoothing."
     )
     pdf.body(
         "The control vector ctrl = [ctrl_x, ctrl_y, ctrl_z] is added to the "
