@@ -277,6 +277,7 @@ def build_pdf():
         "    process_noise = 0.005,\n"
         "    verbose::Bool = true,\n"
         "    inference_backend::Symbol = :analytic,  # or :rxinfer\n"
+        "    action_alpha::Real = 0.3,  # EMA smoothing (0-1)\n"
         ")"
     )
 
@@ -284,6 +285,10 @@ def build_pdf():
     pdf.code_block(
         "  +------------------+\n"
         "  | compute_control  |  belief + goal -> (ctrl, action, efe)\n"
+        "  +--------+---------+\n"
+        "           |\n"
+        "  +--------v---------+\n"
+        "  | EMA smoothing    |  ctrl = a*new + (1-a)*prev\n"
         "  +--------+---------+\n"
         "           |\n"
         "  +--------v---------+\n"
@@ -373,10 +378,10 @@ def build_pdf():
     # 6. Policy
     # ══════════════════════════════════════════════════════════
     pdf.section(6, "Policy Selection (policy.jl)")
-    pdf.body("Selects the action minimizing EFE over a discrete 5\u00d75\u00d75 action grid.")
+    pdf.body("Selects the action minimizing EFE over a discrete 7\u00d77\u00d77 action grid (343 actions).")
     pdf.exports_table([
         ("select_action", "Choose best action for belief+goal"),
-        ("get_action_set", "125-action grid (step_size=0.08)"),
+        ("get_action_set", "343-action grid (step_size=0.04)"),
     ])
     pdf.subsection("select_action Signature")
     pdf.code_block(
@@ -528,9 +533,10 @@ def build_pdf():
         ("--goal", "Goal position (x y z)", "0.8 0.8 0.4"),
         ("--init", "Initial position (x y z)", "-0.5 -0.5 0.2"),
         ("--steps", "Max simulation steps", "500"),
-        ("--ctrl_scale", "Control scaling factor", "4.0"),
-        ("--obs_noise", "Observation variance", "0.01"),
-        ("--process_noise", "Process noise variance", "0.005"),
+        ("--ctrl_scale", "Control scaling factor", "3.0"),
+        ("--obs_noise", "Observation variance", "0.005"),
+        ("--process_noise", "Process noise variance", "0.002"),
+        ("--alpha", "EMA smoothing (0-1; lower=smoother)", "0.3"),
         ("--backend", "analytic | rxinfer", "analytic"),
         ("--save_plot", "Path to save trajectory PNG", "(none)"),
         ("--render", "Launch MuJoCo visualiser", "false"),
@@ -560,7 +566,7 @@ def build_pdf():
         "julia --project=. scripts/run_cli.jl \\\n"
         "  --backend rxinfer \\\n"
         "  --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 \\\n"
-        "  --steps 500 --ctrl_scale 5.0 \\\n"
+        "  --steps 500 --ctrl_scale 3.0 --alpha 0.3 \\\n"
         "  --save_plot trajectory.png --renderarm"
     )
 
@@ -575,12 +581,13 @@ def build_pdf():
         ("steps", "500"),
         ("goal", "[0.8, 0.8, 0.4]"),
         ("init_pos", "[-0.5, -0.5, 0.2]"),
-        ("obs_noise", "0.01"),
-        ("process_noise", "0.005"),
-        ("\u03b3", "1.2"),
-        ("\u03b2", "0.05"),
-        ("ctrl_scale", "4.0"),
-        ("nsteps_per_ctrl", "5"),
+        ("obs_noise", "0.005"),
+        ("process_noise", "0.002"),
+        ("\u03b3", "1.5"),
+        ("\u03b2", "0.02"),
+        ("ctrl_scale", "3.0"),
+        ("nsteps_per_ctrl", "8"),
+        ("action_alpha", "0.3"),
         ("seed", "42"),
         ("verbose", "true"),
         ("inference_backend", ":analytic"),
@@ -590,8 +597,8 @@ def build_pdf():
         pdf.table_row([param, val], [80, 110])
 
     pdf.subsection("Presets")
-    pdf.bullet(f"config_goal_seeking(): \u03b3=2.0, \u03b2=0.05 (emphasize goal)")
-    pdf.bullet(f"config_exploration(): \u03b3=0.5, \u03b2=0.3 (emphasize exploration)")
+    pdf.bullet(f"config_goal_seeking(): \u03b3=2.5, \u03b2=0.01, action_alpha=0.4 (emphasize goal)")
+    pdf.bullet(f"config_exploration(): \u03b3=0.5, \u03b2=0.2, action_alpha=0.6 (emphasize exploration)")
 
     # ══════════════════════════════════════════════════════════
     # 15. MuJoCo Models
@@ -601,8 +608,8 @@ def build_pdf():
     pdf.subsection("models/robot.xml")
     pdf.body("Main 3D robot scene for AIF simulation:")
     pdf.bullet("World: ground plane, light, target site at (0.8, 0.8, 0.4)")
-    pdf.bullet("Robot: body with three slide joints (x, y, z), sphere geom")
-    pdf.bullet("Actuators: position actuators on slide_x/y/z, range \u00b110")
+    pdf.bullet("Robot: body with three slide joints (x, y, z), damping=15, sphere geom")
+    pdf.bullet("Actuators: position actuators on slide_x/y/z, kp=80, range \u00b110")
 
     pdf.subsection("panda_render_scene.xml")
     pdf.body("Scene for --renderarm: Panda arm with pick-and-place visuals.")

@@ -13,7 +13,7 @@ A **simple** Active Inference (AIF) controller for a 3D MuJoCo robot. The robot 
 ```bash
 cd aif_mujoco_robot
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
-julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500 --ctrl_scale 5.0 --save_plot trajectory.png
+julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500 --ctrl_scale 3.0 --save_plot trajectory.png
 ```
 
 ## CLI Usage
@@ -27,9 +27,10 @@ julia --project=. scripts/run_cli.jl --goal <x> <y> <z> --init <x> <y> <z> [opti
 | `--goal` | Goal position (x y z) | 0.8 0.8 0.4 |
 | `--init` | Initial position (x y z) | -0.5 -0.5 0.2 |
 | `--steps` | Max simulation steps | 500 |
-| `--ctrl_scale` | Control scaling | 4.0 |
-| `--obs_noise` | Observation variance (σ²) | 0.01 |
-| `--process_noise` | Process noise variance | 0.005 |
+| `--ctrl_scale` | Control scaling | 3.0 |
+| `--obs_noise` | Observation variance (σ²) | 0.005 |
+| `--process_noise` | Process noise variance | 0.002 |
+| `--alpha` | EMA smoothing weight (0–1; lower = smoother) | 0.3 |
 | `--save_plot` | Path to save trajectory plot | (none) |
 | `--render` | Launch MuJoCo visualiser | false |
 | `--renderarm` | Panda arm replay + scene | false |
@@ -56,7 +57,7 @@ Replays the AIF trajectory on a Panda arm with a pick-and-place scene:
 
 ```bash
 # Use init within Panda bounds (0.2–0.8, -0.4–0.4, 0.1–0.5) for pickup to work
-julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 --steps 500 --ctrl_scale 5.0 --save_plot trajectory.png --renderarm
+julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 --steps 500 --ctrl_scale 3.0 --save_plot trajectory.png --renderarm
 ```
 
 ## MuJoCo GUI Viewer
@@ -70,7 +71,7 @@ julia --project=. -e 'using MuJoCo; MuJoCo.install_visualiser()'
 Run with render:
 
 ```bash
-julia --project=. scripts/run_cli.jl --render --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500 --save_plot trajectory.png
+julia --project=. scripts/run_cli.jl --render --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500 --ctrl_scale 3.0 --save_plot trajectory.png
 ```
 
 Requires a display (WSLg or X11 on WSL2).
@@ -92,7 +93,7 @@ Requires a display (WSLg or X11 on WSL2).
 - `docs/run_cli.md` - CLI usage and render arm (pickup, carry, drop)
 - `docs/aif_beliefs.md` - Belief state (per-dimension noise, covariance bounds)
 - `docs/aif_efe.md` - Expected Free Energy (ctrl_scale in prediction)
-- `docs/aif_policy.md` - Policy selection (5×5×5 action set)
+- `docs/aif_policy.md` - Policy selection (7×7×7 action set, EMA smoothing)
 - `docs/aif_action.md` - Action representation
 - `docs/aif_generative_model.md` - Generative model
 - `docs/aif_rxinfer_filter.md` - RxInfer streaming filter backend
@@ -137,6 +138,7 @@ result = run_simulation(;
     goal = [0.8, 0.8, 0.4],
     init_pos = [-0.5, -0.5, 0.2],
     inference_backend = :rxinfer,   # :analytic (default) or :rxinfer
+    action_alpha = 0.3,             # EMA smoothing (0-1; lower = smoother)
 )
 ```
 
@@ -158,12 +160,23 @@ AIFMuJoCoRobot.RxInferFilter.rxinfer_stop!(filter)
 - **Online noise learning**: extend the RxInfer model to place Gamma priors on observation/process precision and learn them online with variational constraints.
 - **Bethe Free Energy monitoring**: expose RxInfer's free energy stream for comparing with the hand-coded EFE values used for policy selection.
 
+## Smooth Trajectories
+
+The default configuration is tuned for smooth, jitter-free trajectories. Key mechanisms:
+
+1. **EMA control smoothing** (`action_alpha=0.3`): Exponential Moving Average blends 30% new control with 70% previous, eliminating discrete action jumps.
+2. **Fine action grid** (7×7×7 = 343 actions, `step_size=0.04`): Reduces quantization artifacts compared to the previous 5×5×5 grid.
+3. **Joint damping** (`damping=15`) + moderate actuator gain (`kp=80`): Critically-damped physics prevents oscillation.
+4. **Low noise** (`obs_noise=0.005`, `process_noise=0.002`): Stable beliefs lead to consistent action selection.
+
+Adjust `--alpha` to control smoothness: `0.15` = ultra-smooth, `0.3` = default, `1.0` = no smoothing.
+
 ## AIF Notes
 
 - Belief prediction uses **actual applied control** (ctrl), not raw action, for correct dynamics.
 - Per-dimension `obs_noise` and `process_noise` supported (scalar or `[σ²_x, σ²_y, σ²_z]`).
 - Covariance bounds prevent numerical instability.
-- Default config: γ=1.2, β=0.05, process_noise=0.005 for stable goal-reaching.
+- Default config: γ=1.5, β=0.02, ctrl_scale=3.0, action_alpha=0.3 for smooth goal-reaching.
 
 ## References
 

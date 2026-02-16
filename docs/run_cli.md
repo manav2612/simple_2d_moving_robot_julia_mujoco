@@ -17,9 +17,10 @@ julia --project=. scripts/run_cli.jl --goal <x> <y> <z> --init <x> <y> <z> [opti
 | `--goal` | Goal position (x y z) | 0.8 0.8 0.4 |
 | `--init` | Initial position (x y z) | -0.5 -0.5 0.2 |
 | `--steps` | Max simulation steps | 500 |
-| `--ctrl_scale` | Control scaling | 4.0 |
-| `--obs_noise` | Observation variance (σ²) | 0.01 |
-| `--process_noise` | Process noise variance | 0.005 |
+| `--ctrl_scale` | Control scaling | 3.0 |
+| `--obs_noise` | Observation variance (σ²) | 0.005 |
+| `--process_noise` | Process noise variance | 0.002 |
+| `--alpha` | EMA smoothing weight (0–1; lower = smoother) | 0.3 |
 | `--save_plot` | Path to save trajectory plot | (none) |
 | `--render` | Launch MuJoCo visualiser | false |
 | `--renderarm` | Panda arm replay + pick-and-place scene | false |
@@ -65,10 +66,25 @@ The Panda trajectory is `[init_clamped, pos_1, pos_2, ...]` — init is prepende
 Use init/goal within Panda bounds (X 0.2–0.8, Y -0.4–0.4, Z 0.1–0.5) so the arm can reach both the red ball and green box:
 
 ```bash
-julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 --steps 500 --ctrl_scale 5.0 --save_plot trajectory.png --renderarm
+julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 --steps 500 --ctrl_scale 3.0 --save_plot trajectory.png --renderarm
 ```
 
 If init is outside bounds (e.g. -0.5 -0.5 0.2), the arm goes to the clamped position; the red ball stays at init and may not align with the arm for pickup.
+
+## EMA Smoothing (`--alpha`)
+
+Controls the Exponential Moving Average weight for control signal smoothing. At each step:
+
+```
+ctrl_smoothed = α × ctrl_new + (1 − α) × ctrl_previous
+```
+
+| `--alpha` value | Behaviour |
+|-----------------|-----------|
+| `0.15` | Ultra-smooth (slow response, very clean curve) |
+| `0.3` | Default (balanced smoothness and responsiveness) |
+| `0.5` | Moderate smoothing |
+| `1.0` | No smoothing (raw discrete actions, may be jagged) |
 
 ## Inference Backend (`--backend`)
 
@@ -82,5 +98,5 @@ Both produce mathematically identical posteriors. The RxInfer backend is useful 
 ### Example with RxInfer + Panda arm
 
 ```bash
-julia --project=. scripts/run_cli.jl --backend rxinfer --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 --steps 500 --ctrl_scale 5.0 --save_plot trajectory.png --renderarm
+julia --project=. scripts/run_cli.jl --backend rxinfer --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 --steps 500 --ctrl_scale 3.0 --save_plot trajectory.png --renderarm
 ```

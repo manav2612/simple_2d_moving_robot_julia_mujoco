@@ -22,4 +22,4 @@ Wraps MuJoCo for the 3D robot: load model, reset, step, and read state.
 
 ## `step!(env, ctrl; nsteps)`
 
-Applies `ctrl` and runs `nsteps` MuJoCo steps (default 5) for stability.
+Applies `ctrl` and runs `nsteps` MuJoCo steps (default 5, config default 8) for stability. More sub-steps per control produce smoother physics interpolation.

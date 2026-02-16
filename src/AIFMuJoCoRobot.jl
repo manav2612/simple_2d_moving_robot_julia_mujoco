@@ -55,6 +55,11 @@ end
 
 Set `inference_backend = :rxinfer` to use the RxInfer streaming filter
 instead of the built-in analytic diagonal-Gaussian updates (default `:analytic`).
+
+`action_alpha` (0–1): Exponential Moving Average weight for control smoothing.
+  - 1.0 = no smoothing (use raw action each step)
+  - 0.3 = strong smoothing (70% of previous control retained)
+  Lower values produce smoother trajectories at the cost of slower response.
 """
 function run_simulation(; 
     steps::Int = 100,
@@ -70,6 +75,7 @@ function run_simulation(;
     process_noise = 0.005,
     verbose::Bool = true,
     inference_backend::Symbol = :analytic,
+    action_alpha::Real = 0.3,
 )
     seed !== nothing && Random.seed!(seed)
     rng = Random.default_rng()
@@ -94,13 +100,23 @@ function run_simulation(;
         )
     end
 
+    α = clamp(Float64(action_alpha), 0.0, 1.0)
+    prev_ctrl = zeros(3)
+
     try
         for t in 1:steps
             result = compute_control(belief, goal; γ = γ, β = β, ctrl_scale = ctrl_scale)
-            ctrl, action, efe_val = result.ctrl, result.action, result.efe
+            raw_ctrl, action, efe_val = result.ctrl, result.action, result.efe
+
+            # EMA smoothing: blend new control with previous for smooth trajectories
+            ctrl = if t == 1
+                copy(raw_ctrl)
+            else
+                α .* raw_ctrl .+ (1.0 - α) .* prev_ctrl
+            end
+            prev_ctrl = copy(ctrl)
 
             if inference_backend == :rxinfer
-                # Predict + update via RxInfer streaming engine
                 step!(env, ctrl; nsteps = nsteps_per_ctrl)
                 pos = get_position(env)
                 obs = read_observation(collect(env.data.qpos); obs_noise = obs_noise, rng = rng)
@@ -108,7 +124,6 @@ function run_simulation(;
                 belief.mean .= post_mean
                 belief.cov  .= post_var
             else
-                # Analytic diagonal-Gaussian predict + update (original path)
                 predict_belief!(belief, ctrl; process_noise = process_noise)
                 step!(env, ctrl; nsteps = nsteps_per_ctrl)
                 pos = get_position(env)

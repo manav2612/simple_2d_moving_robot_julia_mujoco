@@ -198,6 +198,8 @@ function _mujoco_controller!(m, d)
         s[:last_ctrl] = [0.0, 0.0, 0.0]
         s[:last_action] = [0.0, 0.0, 0.0]
         s[:last_efe] = 0.0
+        s[:prev_smooth_ctrl] = [0.0, 0.0, 0.0]
+        s[:ctrl_step_count] = 0
     end
 
     s[:phys_step] += 1
@@ -216,14 +218,25 @@ function _mujoco_controller!(m, d)
             ctrl_scale = params[:ctrl_scale]
         )
 
-        # Predict belief using actual applied control (ctrl), not raw action
+        # EMA smoothing of control signals for smooth trajectories
+        α_smooth = get(params, :action_alpha, 0.3)
+        s[:ctrl_step_count] += 1
+        raw_ctrl = result.ctrl
+        if s[:ctrl_step_count] <= 1
+            smoothed = copy(raw_ctrl)
+        else
+            smoothed = α_smooth .* raw_ctrl .+ (1.0 - α_smooth) .* s[:prev_smooth_ctrl]
+        end
+        s[:prev_smooth_ctrl] = copy(smoothed)
+
+        # Predict belief using smoothed control
         try
-            AIFMuJoCoRobot.predict_belief!(belief, result.ctrl; process_noise = params[:process_noise])
+            AIFMuJoCoRobot.predict_belief!(belief, smoothed; process_noise = params[:process_noise])
         catch err
             @warn "predict_belief! failed in visualiser" error=err
         end
 
-        s[:last_ctrl] = result.ctrl
+        s[:last_ctrl] = smoothed
         s[:last_action] = result.action
         s[:last_efe] = result.efe
     end
@@ -290,6 +303,7 @@ function parse_args()
         :ctrl_scale => cfg.ctrl_scale,
         :nsteps_per_ctrl => cfg.nsteps_per_ctrl,
         :process_noise => cfg.process_noise,
+        :action_alpha => cfg.action_alpha,
         :seed => cfg.seed,
         :verbose => cfg.verbose,
         :save_plot => "",
@@ -356,6 +370,9 @@ function parse_args()
         elseif a == "--backend"
             # Inference backend: "analytic" (default) or "rxinfer"
             params[:inference_backend] = Symbol(args[i+1]); i += 2
+        elseif a == "--alpha"
+            # EMA smoothing weight (0-1): lower = smoother trajectory
+            params[:action_alpha] = parse(Float64, args[i+1]); i += 2
         else
             println("Unknown arg: ", a)
             i += 1
@@ -366,8 +383,8 @@ end
 
 function main()
     params = parse_args()
-    @printf("Running simulation with goal=(%.3f,%.3f,%.3f) init=(%.3f,%.3f,%.3f) ctrl_scale=%.3f obs_noise=%.4f steps=%d\n",
-        params[:goal][1], params[:goal][2], params[:goal][3], params[:init_pos][1], params[:init_pos][2], params[:init_pos][3], params[:ctrl_scale], params[:obs_noise], params[:steps])
+    @printf("Running simulation with goal=(%.3f,%.3f,%.3f) init=(%.3f,%.3f,%.3f) ctrl_scale=%.3f obs_noise=%.4f alpha=%.2f steps=%d\n",
+        params[:goal][1], params[:goal][2], params[:goal][3], params[:init_pos][1], params[:init_pos][2], params[:init_pos][3], params[:ctrl_scale], params[:obs_noise], params[:action_alpha], params[:steps])
 
     # Open a small log file so messages are preserved when a visualiser window hijacks the terminal.
     log_path = params[:save_plot] != "" ? params[:save_plot] * ".log" : joinpath(@__DIR__, "run_cli.log")
@@ -453,6 +470,7 @@ function main()
                     seed = params[:seed],
                     verbose = params[:verbose],
                     inference_backend = params[:inference_backend],
+                    action_alpha = params[:action_alpha],
                 )
             else
                 # Launch MuJoCo visualiser with an embedded controller
@@ -614,6 +632,7 @@ function main()
             seed = params[:seed],
             verbose = params[:verbose],
             inference_backend = params[:inference_backend],
+            action_alpha = params[:action_alpha],
         )
         RES[] = res
     end

@@ -11,14 +11,19 @@ const Beliefs_mod = Base.parentmodule(@__MODULE__).Beliefs
 
 export select_action, get_action_set
 
-"""Discrete set of 3D velocity actions (5×5×5 grid for finer control).
-step_size: 0.08 gives smoother trajectories than 0.15.
+"""Discrete set of 3D velocity actions (7×7×7 grid for smooth control).
+step_size: 0.04 gives smoother trajectories than 0.08 by reducing quantization.
+Grid: [-3s, -2s, -s, 0, s, 2s, 3s] per axis → 343 actions total.
 """
-function get_action_set(step_size::Real = 0.08)
+function get_action_set(step_size::Real = 0.04)
     actions = Vector{Vector{Float64}}()
-    for dx in (-step_size, -step_size/2, 0.0, step_size/2, step_size)
-        for dy in (-step_size, -step_size/2, 0.0, step_size/2, step_size)
-            for dz in (-step_size, -step_size/2, 0.0, step_size/2, step_size)
+    rng = -3:3
+    for ix in rng
+        dx = ix * step_size
+        for iy in rng
+            dy = iy * step_size
+            for iz in rng
+                dz = iz * step_size
                 push!(actions, [dx, dy, dz])
             end
         end

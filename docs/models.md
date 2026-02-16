@@ -5,8 +5,8 @@
 Main 3D robot scene for AIF simulation:
 
 - **World**: Ground plane, light, target site at (0.8, 0.8, 0.4)
-- **Robot**: Body with three slide joints (x, y, z), sphere geom
-- **Actuators**: Position actuators on slide_x, slide_y, slide_z, range ±10
+- **Robot**: Body with three slide joints (x, y, z), sphere geom. Each joint has `damping=15` for critically-damped response (no oscillation).
+- **Actuators**: Position actuators on slide_x, slide_y, slide_z with `kp=80` (moderate gain for smooth tracking), range ±10
 
 ## `panda_render_scene.xml` (parent dir)
 
