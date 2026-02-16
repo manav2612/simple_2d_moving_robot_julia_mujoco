@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Wraps MuJoCo for the 2D robot: load model, reset, step, and read state.
+Wraps MuJoCo for the 3D robot: load model, reset, step, and read state.
 
 ## Exports
 
@@ -12,14 +12,14 @@ Wraps MuJoCo for the 2D robot: load model, reset, step, and read state.
 | `load_env` | Load model from XML path |
 | `reset!` | Reset to initial position |
 | `step!` | Apply control and step simulation |
-| `get_position` | Current [x, y] from qpos |
-| `get_goal` | Goal [x, y] |
+| `get_position` | Current [x, y, z] from qpos |
+| `get_goal` | Goal [x, y, z] |
 
 ## Model layout
 
-- `qpos[1]`, `qpos[2]`: x, y (slide joints)
-- `ctrl[1]`, `ctrl[2]`: velocity commands for x, y
+- `qpos[1]`, `qpos[2]`, `qpos[3]`: x, y, z (slide joints)
+- `ctrl[1]`, `ctrl[2]`, `ctrl[3]`: displacement (target = pos + ctrl) for x, y, z
 
 ## `step!(env, ctrl; nsteps)`
 
-Applies `ctrl` and runs `nsteps` MuJoCo steps (default 5) for stability.
+Applies `ctrl` and runs `nsteps` MuJoCo steps (default 5, config default 8) for stability. More sub-steps per control produce smoother physics interpolation.

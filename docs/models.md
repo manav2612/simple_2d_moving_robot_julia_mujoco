@@ -2,12 +2,22 @@
 
 ## `models/robot.xml`
 
-Main 2D robot scene:
+Main 3D robot scene for AIF simulation:
 
-- **World**: Ground plane, light, target site at (0.8, 0.8)
-- **Robot**: Body with two slide joints (x, y), sphere geom
-- **Actuators**: Velocity motors on slide_x and slide_y, range ±1.5
+- **World**: Ground plane, light, target site at (0.8, 0.8, 0.4)
+- **Robot**: Body with three slide joints (x, y, z), sphere geom. Each joint has `damping=15` for critically-damped response (no oscillation).
+- **Actuators**: Position actuators on slide_x, slide_y, slide_z with `kp=80` (moderate gain for smooth tracking), range ±10
+
+## `panda_render_scene.xml` (parent dir)
+
+Scene for `--renderarm`: Panda arm with pick-and-place visuals.
+
+- **Red object** (mocap): sphere at initial position. Stays at init until arm reaches it (pickup), then follows arm along trajectory (carry), then placed on top of green box (drop).
+- **Green box**: static at goal position
+- Includes `panda_mocap.xml` for the arm
+- Positions substituted at runtime from `--init` and `--goal`
+- Trajectory: `[init_clamped, pos_1, pos_2, ...]` — arm first goes to init for pickup
 
 ## `models/scene.xml`
 
-Alternative scene (legacy): free-floating robot body. `robot.xml` with slide joints is preferred for controlled 2D motion.
+Alternative scene (legacy): free-floating robot body. `robot.xml` with slide joints is preferred for controlled 3D motion.

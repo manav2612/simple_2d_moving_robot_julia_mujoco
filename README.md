@@ -1,33 +1,77 @@
 # AIF MuJoCo Robot
 
-A **simple** Active Inference (AIF) controller for a 2D MuJoCo robot. The robot navigates toward a goal by minimizing Expected Free Energy (EFE).
+A **simple** Active Inference (AIF) controller for a 3D MuJoCo robot. The robot navigates toward a goal by minimizing Expected Free Energy (EFE).
 
 ## Overview
 
-- **MuJoCo**: Physics simulation with a 2D point-mass robot (slide joints in x, y)
-- **Active Inference**: Belief state, generative model, EFE-based policy selection
+- **MuJoCo**: Physics simulation with a 3D point-mass robot (slide joints in x, y, z)
+- **Active Inference**: Belief state, generative model, EFE-based policy selection, per-dimension (x,y,z) noise
 - **Julia**: Implemented in Julia using MuJoCo.jl
 
 ## Quick Start
 
 ```bash
-cd simple_simple/aif_mujoco_robot
+cd aif_mujoco_robot
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
-julia --project=. experiments/run_simulation.jl
+julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500 --ctrl_scale 3.0 --save_plot trajectory.png
+```
+
+## CLI Usage
+
+```bash
+julia --project=. scripts/run_cli.jl --goal <x> <y> <z> --init <x> <y> <z> [options]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--goal` | Goal position (x y z) | 0.8 0.8 0.4 |
+| `--init` | Initial position (x y z) | -0.5 -0.5 0.2 |
+| `--steps` | Max simulation steps | 500 |
+| `--ctrl_scale` | Control scaling | 3.0 |
+| `--obs_noise` | Observation variance (σ²) | 0.005 |
+| `--process_noise` | Process noise variance | 0.002 |
+| `--alpha` | EMA smoothing weight (0–1; lower = smoother) | 0.3 |
+| `--save_plot` | Path to save trajectory plot | (none) |
+| `--render` | Launch MuJoCo visualiser | false |
+| `--renderarm` | Panda arm replay + scene | false |
+| `--backend` | Inference backend: `analytic` or `rxinfer` | analytic |
+
+## Render Arm (`--renderarm`)
+
+Replays the AIF trajectory on a Panda arm with a pick-and-place scene:
+
+- **Red sphere** at initial position (from `--init`)
+- **Green box** at goal position (from `--goal`)
+
+**Sequence**: (1) Arm moves to init → pickup red ball. (2) Red ball follows arm along AIF trajectory → carry. (3) Red ball placed on top of green box → drop. Trajectory is prepended with init so the arm first goes to the red ball.
+
+**Output bounds** (Panda arm workspace; trajectory is clamped):
+
+| Axis | Min | Max |
+|------|-----|-----|
+| X | 0.2 | 0.8 |
+| Y | -0.4 | 0.4 |
+| Z | 0.1 | 0.5 |
+
+**Recommended input bounds** for `--goal` and `--init`: same as above.
+
+```bash
+# Use init within Panda bounds (0.2–0.8, -0.4–0.4, 0.1–0.5) for pickup to work
+julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init 0.3 0.0 0.2 --steps 500 --ctrl_scale 3.0 --save_plot trajectory.png --renderarm
 ```
 
 ## MuJoCo GUI Viewer
 
-First install the visualiser (run once):
+Install the visualiser (run once):
 
 ```bash
 julia --project=. -e 'using MuJoCo; MuJoCo.install_visualiser()'
 ```
 
-Then run the GUI:
+Run with render:
 
 ```bash
-julia --project=. scripts/visualize_mujoco.jl
+julia --project=. scripts/run_cli.jl --render --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500 --ctrl_scale 3.0 --save_plot trajectory.png
 ```
 
 Requires a display (WSLg or X11 on WSL2).
@@ -40,78 +84,101 @@ Requires a display (WSLg or X11 on WSL2).
 | `src/aif/` | Active Inference (beliefs, EFE, policy, action) |
 | `src/sim/` | MuJoCo env and sensors |
 | `src/control/` | AIF controller |
-| `models/robot.xml` | MuJoCo 2D robot model |
-| `experiments/` | Configs and run script |
-| `docs/` | Per-file documentation (MD) |
+| `models/robot.xml` | MuJoCo 3D robot model |
+| `experiments/` | Configs and run scripts |
+| `docs/` | Per-file documentation |
 
 ## Per-File Documentation
 
-See the `docs/` folder for detailed explanations:
-
+- `docs/run_cli.md` - CLI usage and render arm (pickup, carry, drop)
+- `docs/aif_beliefs.md` - Belief state (per-dimension noise, covariance bounds)
+- `docs/aif_efe.md` - Expected Free Energy (ctrl_scale in prediction)
+- `docs/aif_policy.md` - Policy selection (7×7×7 action set, EMA smoothing)
+- `docs/aif_action.md` - Action representation
+- `docs/aif_generative_model.md` - Generative model
+- `docs/aif_rxinfer_filter.md` - RxInfer streaming filter backend
+- `docs/control_aif_controller.md` - AIF controller
+- `docs/sim_sensors.md` - Sensors
+- `docs/sim_mujoco_env.md` - MuJoCo environment
 - `docs/utils_math.md` - Math utilities
 - `docs/utils_logging.md` - Logging
-- `docs/aif_beliefs.md` - Belief state
-- `docs/aif_generative_model.md` - Generative model
-- `docs/aif_efe.md` - Expected Free Energy
-- `docs/aif_policy.md` - Policy selection
-- `docs/aif_action.md` - Action representation
-- `docs/sim_mujoco_env.md` - MuJoCo environment
-- `docs/sim_sensors.md` - Sensors
-- `docs/control_aif_controller.md` - AIF controller
 - `docs/models.md` - MuJoCo models
+
+## RxInfer Backend (`--backend rxinfer`)
+
+The project supports an optional **RxInfer.jl** streaming inference backend that replaces the built-in analytic diagonal-Gaussian belief updates with reactive message-passing on a factor graph.
+
+### How it works
+
+Each axis (x, y, z) runs an independent 1D linear-Gaussian state-space model via RxInfer's online streaming engine:
+
+- **Transition**: `x ~ Normal(mean = x_prev + u, variance = q)` where `u` is the applied control
+- **Observation**: `y ~ Normal(mean = x, variance = r)`
+- **Autoupdates**: the posterior from each step becomes the prior for the next step
+
+The RxInfer posterior is mathematically equivalent to the analytic Kalman-filter-style update (verified by tests to machine-epsilon accuracy).
+
+### Usage
+
+```bash
+# Run with RxInfer backend (headless)
+julia --project=. scripts/run_cli.jl --backend rxinfer --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500
+
+# Default analytic backend (unchanged behaviour)
+julia --project=. scripts/run_cli.jl --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500
+```
+
+### Programmatic use
+
+```julia
+using AIFMuJoCoRobot
+
+# Use RxInfer backend in run_simulation
+result = run_simulation(;
+    goal = [0.8, 0.8, 0.4],
+    init_pos = [-0.5, -0.5, 0.2],
+    inference_backend = :rxinfer,   # :analytic (default) or :rxinfer
+    action_alpha = 0.3,             # EMA smoothing (0-1; lower = smoother)
+)
+```
+
+### Standalone filter (without MuJoCo)
+
+```julia
+using AIFMuJoCoRobot
+
+filter = AIFMuJoCoRobot.RxInferFilter.init_rxinfer_filter(
+    [0.0, 0.0, 0.0], [0.01, 0.01, 0.01];
+    obs_noise = 0.01, process_noise = 0.005,
+)
+post_mean, post_var = AIFMuJoCoRobot.RxInferFilter.rxinfer_step!(filter, ctrl, obs)
+AIFMuJoCoRobot.RxInferFilter.rxinfer_stop!(filter)
+```
+
+### Future extensions (Phase B/C)
+
+- **Online noise learning**: extend the RxInfer model to place Gamma priors on observation/process precision and learn them online with variational constraints.
+- **Bethe Free Energy monitoring**: expose RxInfer's free energy stream for comparing with the hand-coded EFE values used for policy selection.
+
+## Smooth Trajectories
+
+The default configuration is tuned for smooth, jitter-free trajectories. Key mechanisms:
+
+1. **EMA control smoothing** (`action_alpha=0.3`): Exponential Moving Average blends 30% new control with 70% previous, eliminating discrete action jumps.
+2. **Fine action grid** (7×7×7 = 343 actions, `step_size=0.04`): Reduces quantization artifacts compared to the previous 5×5×5 grid.
+3. **Joint damping** (`damping=15`) + moderate actuator gain (`kp=80`): Critically-damped physics prevents oscillation.
+4. **Low noise** (`obs_noise=0.005`, `process_noise=0.002`): Stable beliefs lead to consistent action selection.
+
+Adjust `--alpha` to control smoothness: `0.15` = ultra-smooth, `0.3` = default, `1.0` = no smoothing.
+
+## AIF Notes
+
+- Belief prediction uses **actual applied control** (ctrl), not raw action, for correct dynamics.
+- Per-dimension `obs_noise` and `process_noise` supported (scalar or `[σ²_x, σ²_y, σ²_z]`).
+- Covariance bounds prevent numerical instability.
+- Default config: γ=1.5, β=0.02, ctrl_scale=3.0, action_alpha=0.3 for smooth goal-reaching.
 
 ## References
 
-- [MuJoCo Julia Simulation](https://chatgpt.com/share/6987e046-7b38-8011-9584-054ec291c7c6)
 - MuJoCo.jl: https://github.com/JamieMair/MuJoCo.jl
-
-## MuJoCo usage
-
-Prerequisites:
-
-- Install MuJoCo and ensure the native library is findable (set `LD_LIBRARY_PATH` or OS equivalent).
-- Place your MuJoCo license/key where MuJoCo expects it, or set `MUJOCO_KEY_PATH`.
-- Activate the Julia project before running: `julia --project=.`
-
-Wrapper script:
-
-- A helper script `scripts/run_mujoco.sh` was added to invoke the CLI with passed arguments. Make it executable and run from the repo root:
-
-```bash
-chmod +x scripts/run_mujoco.sh
-./scripts/run_mujoco.sh --goal 4.8 4.8 --init 2.5 2.5 --ctrl_scale 5.0 --steps 2000 --save_plot simulation.png --verbose true
-```
-
-Direct CLI usage:
-
-```bash
-julia --project=. scripts/run_cli.jl --goal 4.8 4.8 --init 2.5 2.5 --ctrl_scale 5.0 --steps 2000 --save_plot simulation.png --verbose true
-```
-
-Rendering and colors:
-
-- To launch the MuJoCo visualiser during a run, pass `--render` to the CLI (requires a display):
-
-```bash
-julia --project=. scripts/run_cli.jl --render --goal 0.9 0.6 --init 0.5 0.5 --ctrl_scale 5.0 --steps 2000
-```
-
-- To change the robot (agent) color at runtime, pass `--agent_color r g b [a]` (three or four floats, 0..1). Example to make the agent red:
-
-```bash
-julia --project=. scripts/run_cli.jl --render --agent_color 1.0 0.0 0.0 --goal 0.9 0.6 --init 0.5 0.5 --steps 2000
-```
-
-- To change the goal marker color, pass `--goal_color r g b [a]` similarly. Example:
-
-```bash
-julia --project=. scripts/run_cli.jl --render --goal_color 0.0 1.0 0.0 --goal 0.9 0.6 --init 0.5 0.5 --steps 2000
-```
-
-Notes:
-
-- `obs_noise` is treated as variance (σ²) in the code; default experiments use `0.01`.
-- The MuJoCo model `models/robot.xml` uses position actuators — ensure `ctrlrange` covers your desired offsets (we use `-10 10` for large goals).
-- If a long run shows no progress, confirm actuator ranges and try increasing `--ctrl_scale` (we found ~5.0 effective in sweeps).
-
-Want this moved to a separate docs file or a CLI `--help`? I can add either.
+- RxInfer.jl: https://github.com/ReactiveBayes/RxInfer.jl

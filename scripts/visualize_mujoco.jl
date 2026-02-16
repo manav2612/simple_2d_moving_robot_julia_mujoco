@@ -20,21 +20,22 @@ data = MuJoCo.init_data(model)
 MuJoCo.reset!(model, data)
 
 # -------------------------
-# AIF state
+# AIF state (3D)
 # -------------------------
-goal = [0.8, 0.8]
-init_pos = [-0.5, -0.5]
+goal = [0.8, 0.8, 0.4]
+init_pos = [-0.5, -0.5, 0.2]
 
 Random.seed!(42)
 rng = Random.default_rng()
 
-# Set initial position
+# Set initial position (x, y, z)
 q = collect(data.qpos)
 q[1] = init_pos[1]
 q[2] = init_pos[2]
+q[3] = init_pos[3]
 data.qpos[:] = q
 
-belief = AIFMuJoCoRobot.init_belief(init_pos, [0.01, 0.01])
+belief = AIFMuJoCoRobot.init_belief(init_pos, [0.01, 0.01, 0.01])
 obs_noise = 0.01
 ctrl_scale = 5.0
 nsteps_per_ctrl = 5
@@ -43,15 +44,15 @@ nsteps_per_ctrl = 5
 # Logging setup
 # -------------------------
 log_file = open("trajectory_log.csv", "w")
-println(log_file, "step,robot_x,robot_y,belief_x,belief_y,goal_x,goal_y,ctrl_x,ctrl_y")
+println(log_file, "step,robot_x,robot_y,robot_z,belief_x,belief_y,belief_z,goal_x,goal_y,goal_z,ctrl_x,ctrl_y,ctrl_z")
 
 step_counter = 0
 
 function controller!(m, d)
     global step_counter
 
-    pos = [d.qpos[1], d.qpos[2]]
-    obs = pos .+ (obs_noise > 0 ? obs_noise .* randn(rng, 2) : zeros(2))
+    pos = [d.qpos[1], d.qpos[2], d.qpos[3]]
+    obs = pos .+ (obs_noise > 0 ? sqrt(obs_noise) .* randn(rng, 3) : zeros(3))
 
     AIFMuJoCoRobot.update_belief!(belief, obs; obs_noise = obs_noise)
 
@@ -67,8 +68,9 @@ function controller!(m, d)
 
     # Position actuators: target = pos + ctrl
     target = pos .+ ctrl
-    d.ctrl[1] = clamp(target[1], -2.0, 2.0)
-    d.ctrl[2] = clamp(target[2], -2.0, 2.0)
+    d.ctrl[1] = clamp(target[1], -10.0, 10.0)
+    d.ctrl[2] = clamp(target[2], -10.0, 10.0)
+    d.ctrl[3] = clamp(target[3], -10.0, 10.0)
 
     # -------------------------
     # Logging

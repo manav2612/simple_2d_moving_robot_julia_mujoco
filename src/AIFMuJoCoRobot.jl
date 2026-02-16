@@ -1,5 +1,5 @@
 """
-AIFMuJoCoRobot: Active Inference control for a simple 2D MuJoCo robot.
+AIFMuJoCoRobot: Active Inference control for a simple 3D MuJoCo robot.
 """
 module AIFMuJoCoRobot
 
@@ -24,6 +24,10 @@ using .Action
 include("aif/policy.jl")  # policy.jl uses EFE, Beliefs from parent scope
 using .Policy
 
+# RxInfer streaming filter (optional backend)
+include("aif/rxinfer_filter.jl")
+using .RxInferFilter
+
 # Sim
 include("sim/sensors.jl")
 include("sim/mujoco_env.jl")
@@ -47,11 +51,20 @@ function default_model_path()
     return normpath(joinpath(@__DIR__, "..", "models", "robot.xml"))
 end
 
-"""Run the Active Inference + MuJoCo simulation."""
+"""Run the Active Inference + MuJoCo simulation.
+
+Set `inference_backend = :rxinfer` to use the RxInfer streaming filter
+instead of the built-in analytic diagonal-Gaussian updates (default `:analytic`).
+
+`action_alpha` (0–1): Exponential Moving Average weight for control smoothing.
+  - 1.0 = no smoothing (use raw action each step)
+  - 0.3 = strong smoothing (70% of previous control retained)
+  Lower values produce smoother trajectories at the cost of slower response.
+"""
 function run_simulation(; 
     steps::Int = 100,
-    goal::Vector{Float64} = [0.8, 0.8],
-    init_pos::Vector{Float64} = [-0.5, -0.5],
+    goal::Vector{Float64} = [0.8, 0.8, 0.4],
+    init_pos::Vector{Float64} = [-0.5, -0.5, 0.2],
     obs_noise::Real = 0.01,
     γ::Real = 1.0,
     β::Real = 0.1,
@@ -59,8 +72,10 @@ function run_simulation(;
     nsteps_per_ctrl::Int = 5,
     model_path::String = default_model_path(),
     seed::Union{Int,Nothing} = 42,
-    process_noise::Real = 0.01,
-    verbose::Bool = true
+    process_noise = 0.005,
+    verbose::Bool = true,
+    inference_backend::Symbol = :analytic,
+    action_alpha::Real = 0.3,
 )
     seed !== nothing && Random.seed!(seed)
     rng = Random.default_rng()
@@ -68,7 +83,7 @@ function run_simulation(;
     env = load_env(model_path; goal = goal)
     reset!(env; init_pos = init_pos)
 
-    belief = init_belief(init_pos, [0.01, 0.01])
+    belief = init_belief(init_pos, [0.01, 0.01, 0.01])
     history = (
         positions = Vector{Vector{Float64}}(),
         beliefs_mean = Vector{Vector{Float64}}(),
@@ -76,30 +91,62 @@ function run_simulation(;
         efe_history = Float64[],
     )
 
-    for t in 1:steps
-        result = compute_control(belief, goal; γ = γ, β = β, ctrl_scale = ctrl_scale)
-        ctrl, action, efe_val = result.ctrl, result.action, result.efe
+    # Optionally create the RxInfer streaming filter
+    rxfilter = nothing
+    if inference_backend == :rxinfer
+        rxfilter = RxInferFilter.init_rxinfer_filter(
+            init_pos, [0.01, 0.01, 0.01];
+            obs_noise = obs_noise, process_noise = process_noise,
+        )
+    end
 
-        # Predict belief forward using chosen action (time/prior update)
-        predict_belief!(belief, action; process_noise = process_noise)
+    α = clamp(Float64(action_alpha), 0.0, 1.0)
+    prev_ctrl = zeros(3)
 
-        # Execute control in the MuJoCo environment
-        step!(env, ctrl; nsteps = nsteps_per_ctrl)
-        pos = get_position(env)
-        obs = read_observation(collect(env.data.qpos); obs_noise = obs_noise, rng = rng)
-        update_belief!(belief, obs; obs_noise = obs_noise)
+    try
+        for t in 1:steps
+            result = compute_control(belief, goal; γ = γ, β = β, ctrl_scale = ctrl_scale)
+            raw_ctrl, action, efe_val = result.ctrl, result.action, result.efe
 
-        push!(history.positions, copy(pos))
-        push!(history.beliefs_mean, copy(belief.mean))
-        push!(history.actions, copy(action))
-        push!(history.efe_history, efe_val)
+            # EMA smoothing: blend new control with previous for smooth trajectories
+            ctrl = if t == 1
+                copy(raw_ctrl)
+            else
+                α .* raw_ctrl .+ (1.0 - α) .* prev_ctrl
+            end
+            prev_ctrl = copy(ctrl)
 
-        verbose && log_step(t, pos, goal, belief.mean, efe_val)
+            if inference_backend == :rxinfer
+                step!(env, ctrl; nsteps = nsteps_per_ctrl)
+                pos = get_position(env)
+                obs = read_observation(collect(env.data.qpos); obs_noise = obs_noise, rng = rng)
+                post_mean, post_var = RxInferFilter.rxinfer_step!(rxfilter, ctrl, obs)
+                belief.mean .= post_mean
+                belief.cov  .= post_var
+            else
+                predict_belief!(belief, ctrl; process_noise = process_noise)
+                step!(env, ctrl; nsteps = nsteps_per_ctrl)
+                pos = get_position(env)
+                obs = read_observation(collect(env.data.qpos); obs_noise = obs_noise, rng = rng)
+                update_belief!(belief, obs; obs_noise = obs_noise)
+            end
 
-        dist = sqrt(sum((pos .- goal) .^ 2))
-        if dist < 0.05
-            verbose && log_summary(t, dist, true)
-            return (env = env, belief = belief, history = history, converged = true)
+            push!(history.positions, copy(pos))
+            push!(history.beliefs_mean, copy(belief.mean))
+            push!(history.actions, copy(action))
+            push!(history.efe_history, efe_val)
+
+            verbose && log_step(t, pos, goal, belief.mean, efe_val)
+
+            dist = sqrt(sum((pos .- goal) .^ 2))
+            if dist < 0.05
+                verbose && log_summary(t, dist, true)
+                return (env = env, belief = belief, history = history, converged = true)
+            end
+        end
+    finally
+        if rxfilter !== nothing
+            RxInferFilter.rxinfer_stop!(rxfilter)
         end
     end
 

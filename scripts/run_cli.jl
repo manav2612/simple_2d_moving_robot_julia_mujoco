@@ -10,11 +10,13 @@ using MuJoCo
 using Random
 using Plots
 
-# Workspace / goal bounds chosen to stay inside Panda arm's reachable region.
+# Workspace bounds chosen to stay inside Panda arm's reachable region.
 const PANDA_X_MIN = 0.2
 const PANDA_X_MAX = 0.8
 const PANDA_Y_MIN = -0.4
 const PANDA_Y_MAX = 0.4
+const PANDA_Z_MIN = 0.1
+const PANDA_Z_MAX = 0.5
 
 function _require_id_local(model::MuJoCo.Model, objtype, name::AbstractString)
     id = MuJoCo.mj_name2id(model, Cint(objtype), name)
@@ -32,18 +34,30 @@ function render_panda_arm_from_history(history, params)
         return
     end
 
-    # Load Panda model (same as Python / move_panda_arm.jl)
+    # Scene: red object at init_pos, green box at goal. After trajectory, red on top of box.
+    init_pos = params[:init_pos]
+    goal = params[:goal]
+    init_str = @sprintf("%.4f %.4f %.4f", init_pos[1], init_pos[2], init_pos[3])
+    goal_str = @sprintf("%.4f %.4f %.4f", goal[1], goal[2], goal[3])
+
     MuJoCo.init_visualiser()
-    panda_xml = normpath(joinpath(@__DIR__, "..", "..", "panda_try.xml"))
-    @printf("Rendering Panda arm using trajectory from %d AIF steps\n", length(positions))
+    scene_dir = normpath(joinpath(@__DIR__, "..", ".."))
+    scene_path = joinpath(scene_dir, "panda_render_scene.xml")
+    xml_str = read(scene_path, String)
+    xml_str = replace(xml_str, "__INIT_POS__" => init_str, "__GOAL_POS__" => goal_str)
+    tmp_xml = joinpath(scene_dir, "panda_render_scene_tmp.xml")
+    write(tmp_xml, xml_str)
+
+    @printf("Rendering Panda arm: red at init=(%.2f,%.2f,%.2f), green box at goal=(%.2f,%.2f,%.2f)\n",
+            init_pos[1], init_pos[2], init_pos[3], goal[1], goal[2], goal[3])
+    @printf("Trajectory: %d AIF steps\n", length(positions))
     flush(stdout)
 
-    model = MuJoCo.load_model(panda_xml)
+    model = MuJoCo.load_model(tmp_xml)
+    rm(tmp_xml; force = true)
     data  = MuJoCo.init_data(model)
     MuJoCo.reset!(model, data)
 
-    # Make the arm follow mocap without fighting the equality constraint:
-    # initialise joint actuators to current joint positions.
     MuJoCo.forward!(model, data)
     for i in 1:7
         actname = "actuator$(i)"
@@ -58,35 +72,48 @@ function render_panda_arm_from_history(history, params)
     mocap_id < 0 && error("Body 'panda_mocap' is not a mocap body (body_mocapid < 0)")
     mocap_row = mocap_id + 1
 
-    # Hard-coded third dimension (z) for the AIF 2D positions
-    z_height = 0.25
+    red_body_id = _require_id_local(model, MuJoCo.mjOBJ_BODY, "red_object")
+    red_mocap_id = Int(model.body_mocapid[red_body_id + 1])
+    red_mocap_id < 0 && error("Body 'red_object' is not a mocap body")
+    red_mocap_row = red_mocap_id + 1
+
     gain = 0.02
     stop_dist = 0.02
 
-    # Map each 2D AIF point directly into the Panda workspace,
-    # only clamping to the arm's safe XY range.
-    panda_traj = Vector{Vector{Float64}}(undef, length(positions))
+    # Hardcoded final position: red object on top of green box (box half-size 0.04, sphere radius 0.025)
+    box_half = 0.04
+    sphere_r = 0.025
+    red_on_box = [goal[1], goal[2], goal[3] + box_half + sphere_r]
+
+    # Prepend init (clamped) so arm first goes to red ball for pickup, then follows AIF path
+    init_clamped = [clamp(init_pos[1], PANDA_X_MIN, PANDA_X_MAX),
+                   clamp(init_pos[2], PANDA_Y_MIN, PANDA_Y_MAX),
+                   clamp(init_pos[3], PANDA_Z_MIN, PANDA_Z_MAX)]
+    panda_traj = Vector{Vector{Float64}}(undef, length(positions) + 1)
+    panda_traj[1] = init_clamped
     for (i, p) in enumerate(positions)
         x = clamp(p[1], PANDA_X_MIN, PANDA_X_MAX)
         y = clamp(p[2], PANDA_Y_MIN, PANDA_Y_MAX)
-        panda_traj[i] = [x, y]
+        z = clamp(p[3], PANDA_Z_MIN, PANDA_Z_MAX)
+        panda_traj[i + 1] = [x, y, z]
     end
 
-    # Start mocap at the first target point so motion begins smoothly.
-    first_xy = panda_traj[1]
+    first_xyz = panda_traj[1]
     @views begin
-        data.mocap_pos[mocap_row, 1] = first_xy[1]
-        data.mocap_pos[mocap_row, 2] = first_xy[2]
-        data.mocap_pos[mocap_row, 3] = z_height
+        data.mocap_pos[mocap_row, 1] = first_xyz[1]
+        data.mocap_pos[mocap_row, 2] = first_xyz[2]
+        data.mocap_pos[mocap_row, 3] = first_xyz[3]
     end
 
     PANDA_VIS_STATE[] = Dict(
         :traj => panda_traj,
         :idx => 1,
-        :z => z_height,
         :gain => gain,
         :stop_dist => stop_dist,
         :mocap_row => mocap_row,
+        :red_mocap_row => red_mocap_row,
+        :red_on_box => red_on_box,
+        :place_gain => 0.03,
         :vis_step => 0,
         :last_logged_idx => 0,
     )
@@ -98,42 +125,53 @@ function render_panda_arm_from_history(history, params)
         traj = s[:traj]
         idx = s[:idx]
         s[:vis_step] += 1
-        if idx > length(traj)
-            return
-        end
 
-        # Current 2D position already mapped into Panda's reachable XY workspace
-        pos2d = traj[idx]
-        target = [pos2d[1], pos2d[2], s[:z]]
-
-        r = s[:mocap_row]
-        mp = @views collect(d.mocap_pos[r, :])
-
-        # Move mocap position toward target
-        dx = target .- mp
-        if sqrt(sum(dx.^2)) > s[:stop_dist]
-            mp .+= s[:gain] .* dx
+        # Panda arm: follow AIF trajectory
+        if idx <= length(traj)
+            pos3d = traj[idx]
+            target = [pos3d[1], pos3d[2], pos3d[3]]
+            r = s[:mocap_row]
+            mp = @views collect(d.mocap_pos[r, :])
+            dx = target .- mp
+            if sqrt(sum(dx.^2)) > s[:stop_dist]
+                mp .+= s[:gain] .* dx
+            else
+                s[:idx] = idx + 1
+                @printf("Panda idx %d/%d | target=(%.3f, %.3f, %.3f)\n",
+                        idx, length(traj), target[1], target[2], target[3])
+                flush(stdout)
+            end
+            @views for j in 1:3
+                d.mocap_pos[r, j] = mp[j]
+            end
+            # Pickup + carry: red ball follows arm only after arm reaches init (idx>=2)
+            if idx >= 2
+                rr = s[:red_mocap_row]
+                @views for j in 1:3
+                    d.mocap_pos[rr, j] = mp[j]
+                end
+            end
         else
-            s[:idx] = idx + 1
-            # Log when we advance to the next target, to mirror AIF logging style.
-            @printf("Panda idx %d/%d | target=(%.3f, %.3f, %.3f)\n",
-                    idx, length(traj), target[1], target[2], target[3])
-            flush(stdout)
-        end
-
-        @views for j in 1:3
-            d.mocap_pos[r, j] = mp[j]
+            # Trajectory done: place red object on top of green box (hardcoded grasper)
+            rr = s[:red_mocap_row]
+            rp = @views collect(d.mocap_pos[rr, :])
+            dest = s[:red_on_box]
+            dr = dest .- rp
+            if sqrt(sum(dr.^2)) > 0.005
+                rp .+= s[:place_gain] .* dr
+                @views for j in 1:3
+                    d.mocap_pos[rr, j] = rp[j]
+                end
+            end
         end
 
         PANDA_VIS_STATE[] = s
         return nothing
     end
 
-    println("Launching Panda arm visualiser from AIF trajectory. Close window to exit.")
+    println("Launching Panda arm visualiser. Red at init, green box at goal. After trajectory, red placed on box.")
     flush(stdout)
 
-    # Use the same pattern as the main visualiser: invoke via Base.invokelatest
-    # so we match the extension method signature and avoid world-age issues.
     Base.invokelatest(MuJoCo.visualise!, model, data; controller = _panda_controller!)
 end
 
@@ -152,14 +190,16 @@ function _mujoco_controller!(m, d)
     rng = s[:rng]
     history = s[:history]
 
-    pos = [d.qpos[1], d.qpos[2]]
+    pos = [d.qpos[1], d.qpos[2], d.qpos[3]]
     obs_noise = params[:obs_noise]
     # Initialize internal counters/state on first call
     if !haskey(s, :phys_step)
         s[:phys_step] = 0
-        s[:last_ctrl] = [0.0, 0.0]
-        s[:last_action] = [0.0, 0.0]
+        s[:last_ctrl] = [0.0, 0.0, 0.0]
+        s[:last_action] = [0.0, 0.0, 0.0]
         s[:last_efe] = 0.0
+        s[:prev_smooth_ctrl] = [0.0, 0.0, 0.0]
+        s[:ctrl_step_count] = 0
     end
 
     s[:phys_step] += 1
@@ -178,14 +218,25 @@ function _mujoco_controller!(m, d)
             ctrl_scale = params[:ctrl_scale]
         )
 
-        # Predict belief forward using the chosen action (matches run_simulation)
+        # EMA smoothing of control signals for smooth trajectories
+        α_smooth = get(params, :action_alpha, 0.3)
+        s[:ctrl_step_count] += 1
+        raw_ctrl = result.ctrl
+        if s[:ctrl_step_count] <= 1
+            smoothed = copy(raw_ctrl)
+        else
+            smoothed = α_smooth .* raw_ctrl .+ (1.0 - α_smooth) .* s[:prev_smooth_ctrl]
+        end
+        s[:prev_smooth_ctrl] = copy(smoothed)
+
+        # Predict belief using smoothed control
         try
-            AIFMuJoCoRobot.predict_belief!(belief, result.action; process_noise = params[:process_noise])
+            AIFMuJoCoRobot.predict_belief!(belief, smoothed; process_noise = params[:process_noise])
         catch err
             @warn "predict_belief! failed in visualiser" error=err
         end
 
-        s[:last_ctrl] = result.ctrl
+        s[:last_ctrl] = smoothed
         s[:last_action] = result.action
         s[:last_efe] = result.efe
     end
@@ -194,10 +245,11 @@ function _mujoco_controller!(m, d)
     target = pos .+ s[:last_ctrl]
     d.ctrl[1] = clamp(target[1], -10.0, 10.0)
     d.ctrl[2] = clamp(target[2], -10.0, 10.0)
+    d.ctrl[3] = clamp(target[3], -10.0, 10.0)
 
     # After a full control block has been executed, read observation and update belief
     if nspc <= 1 || (s[:phys_step] % nspc == 0)
-        obs = pos .+ (obs_noise > 0 ? sqrt(obs_noise) .* randn(rng, 2) : zeros(2))
+        obs = pos .+ (obs_noise > 0 ? sqrt(obs_noise) .* randn(rng, 3) : zeros(3))
         AIFMuJoCoRobot.update_belief!(belief, obs; obs_noise = obs_noise)
 
         # record history at control-step resolution (after execution)
@@ -223,6 +275,14 @@ function parse_float_pair(args, i)
     return (x, y), i+2
 end
 
+"""Parse three floats (x, y, z) for 3D goal/init."""
+function parse_float_triple(args, i)
+    x = parse(Float64, args[i])
+    y = parse(Float64, args[i+1])
+    z = parse(Float64, args[i+2])
+    return [x, y, z], i+3
+end
+
 function parse_float_n(args, i, n)
     vals = Float64[]
     for j in 0:(n-1)
@@ -242,14 +302,16 @@ function parse_args()
         :β => cfg.β,
         :ctrl_scale => cfg.ctrl_scale,
         :nsteps_per_ctrl => cfg.nsteps_per_ctrl,
-        :process_noise => 0.01,
+        :process_noise => cfg.process_noise,
+        :action_alpha => cfg.action_alpha,
         :seed => cfg.seed,
         :verbose => cfg.verbose,
         :save_plot => "",
         :render => false,
         :renderarm => false,
         :agent_color => nothing,
-        :goal_color => nothing
+        :goal_color => nothing,
+        :inference_backend => cfg.inference_backend
     )
 
     args = copy(ARGS)
@@ -257,13 +319,9 @@ function parse_args()
     while i <= length(args)
         a = args[i]
         if a == "--goal"
-            (gx, gy), i = parse_float_pair(args, i+1)
-            # Keep AIF behaviour unchanged: store goal exactly as provided.
-            params[:goal] = [gx, gy]
+            params[:goal], i = parse_float_triple(args, i+1)
         elseif a == "--init"
-            (ix, iy), i = parse_float_pair(args, i+1)
-            # Keep AIF behaviour unchanged: store init_pos exactly as provided.
-            params[:init_pos] = [ix, iy]
+            params[:init_pos], i = parse_float_triple(args, i+1)
         elseif a == "--obs_noise"
             params[:obs_noise] = parse(Float64, args[i+1]); i += 2
         elseif a == "--ctrl_scale"
@@ -309,6 +367,12 @@ function parse_args()
         elseif a == "--renderarm"
             # 3D Panda arm visualisation using AIF 2D trajectory (flag, no argument)
             params[:renderarm] = true; i += 1
+        elseif a == "--backend"
+            # Inference backend: "analytic" (default) or "rxinfer"
+            params[:inference_backend] = Symbol(args[i+1]); i += 2
+        elseif a == "--alpha"
+            # EMA smoothing weight (0-1): lower = smoother trajectory
+            params[:action_alpha] = parse(Float64, args[i+1]); i += 2
         else
             println("Unknown arg: ", a)
             i += 1
@@ -319,8 +383,8 @@ end
 
 function main()
     params = parse_args()
-    @printf("Running simulation with goal=(%.3f,%.3f) init=(%.3f,%.3f) ctrl_scale=%.3f obs_noise=%.4f steps=%d\n",
-        params[:goal][1], params[:goal][2], params[:init_pos][1], params[:init_pos][2], params[:ctrl_scale], params[:obs_noise], params[:steps])
+    @printf("Running simulation with goal=(%.3f,%.3f,%.3f) init=(%.3f,%.3f,%.3f) ctrl_scale=%.3f obs_noise=%.4f alpha=%.2f steps=%d\n",
+        params[:goal][1], params[:goal][2], params[:goal][3], params[:init_pos][1], params[:init_pos][2], params[:init_pos][3], params[:ctrl_scale], params[:obs_noise], params[:action_alpha], params[:steps])
 
     # Open a small log file so messages are preserved when a visualiser window hijacks the terminal.
     log_path = params[:save_plot] != "" ? params[:save_plot] * ".log" : joinpath(@__DIR__, "run_cli.log")
@@ -341,12 +405,13 @@ function main()
                     pos = candidate.history.positions
                     xs = [p[1] for p in pos]
                     ys = [p[2] for p in pos]
-                    plt = plot(xs, ys, label = "Robot path", linewidth = 2, legend = :topright)
+                    zs = [p[3] for p in pos]
+                    plt = plot(xs, ys, zs, label = "Robot path", linewidth = 2, legend = :topright)
                     if length(xs) > 0
-                        scatter!(plt, [xs[1]], [ys[1]], label = "Start", markersize = 8)
+                        scatter!(plt, [xs[1]], [ys[1]], [zs[1]], label = "Start", markersize = 8)
                     end
-                    scatter!(plt, [params[:goal][1]], [params[:goal][2]], label = "Goal", markersize = 10)
-                    xlabel!(plt, "x"); ylabel!(plt, "y"); title!(plt, "AIF Robot Trajectory")
+                    scatter!(plt, [params[:goal][1]], [params[:goal][2]], [params[:goal][3]], label = "Goal", markersize = 10)
+                    xlabel!(plt, "x"); ylabel!(plt, "y"); zlabel!(plt, "z"); title!(plt, "AIF Robot Trajectory (3D)")
                     savefig(plt, params[:save_plot])
                     try
                         println(log_io, "Saved plot to: " * params[:save_plot]); flush(log_io)
@@ -404,6 +469,8 @@ function main()
                     process_noise = params[:process_noise],
                     seed = params[:seed],
                     verbose = params[:verbose],
+                    inference_backend = params[:inference_backend],
+                    action_alpha = params[:action_alpha],
                 )
             else
                 # Launch MuJoCo visualiser with an embedded controller
@@ -465,16 +532,17 @@ function main()
             data = MuJoCo.init_data(model)
             MuJoCo.reset!(model, data)
 
-            # set initial position
+            # set initial position (x, y, z)
             q = collect(data.qpos)
             q[1] = params[:init_pos][1]
             q[2] = params[:init_pos][2]
+            q[3] = params[:init_pos][3]
             data.qpos[:] = q
 
             Random.seed!(params[:seed])
             rng = Random.default_rng()
 
-            belief = AIFMuJoCoRobot.init_belief(params[:init_pos], [0.01, 0.01])
+            belief = AIFMuJoCoRobot.init_belief(params[:init_pos], [0.01, 0.01, 0.01])
             obs_noise = params[:obs_noise]
             ctrl_scale = params[:ctrl_scale]
 
@@ -518,7 +586,7 @@ function main()
                     if step > last_step && length(hist[:positions]) >= 1
                         pos = hist[:positions][end]
                         dist = sqrt(sum((pos .- params[:goal]).^2))
-                        logmsg("[Step ", step, "] pos=(", round(pos[1],digits=3), ", ", round(pos[2],digits=3), ") goal=(", params[:goal][1], ", ", params[:goal][2], ") dist=", round(dist,digits=4))
+                        logmsg("[Step ", step, "] pos=(", round(pos[1],digits=3), ", ", round(pos[2],digits=3), ", ", round(pos[3],digits=3), ") goal=(", params[:goal][1], ", ", params[:goal][2], ", ", params[:goal][3], ") dist=", round(dist,digits=4))
                         last_step = step
                     end
                     # exit when requested steps reached or visualiser task finished
@@ -563,6 +631,8 @@ function main()
             process_noise = params[:process_noise],
             seed = params[:seed],
             verbose = params[:verbose],
+            inference_backend = params[:inference_backend],
+            action_alpha = params[:action_alpha],
         )
         RES[] = res
     end
@@ -596,10 +666,11 @@ function main()
             pos = res.history.positions
             xs = [p[1] for p in pos]
             ys = [p[2] for p in pos]
-            plt = plot(xs, ys, label = "Robot path", linewidth = 2, legend = :topright)
-            scatter!(plt, [xs[1]], [ys[1]], label = "Start", markersize = 8)
-            scatter!(plt, [params[:goal][1]], [params[:goal][2]], label = "Goal", markersize = 10)
-            xlabel!(plt, "x"); ylabel!(plt, "y"); title!(plt, "AIF Robot Trajectory")
+            zs = [p[3] for p in pos]
+            plt = plot(xs, ys, zs, label = "Robot path", linewidth = 2, legend = :topright)
+            scatter!(plt, [xs[1]], [ys[1]], [zs[1]], label = "Start", markersize = 8)
+            scatter!(plt, [params[:goal][1]], [params[:goal][2]], [params[:goal][3]], label = "Goal", markersize = 10)
+            xlabel!(plt, "x"); ylabel!(plt, "y"); zlabel!(plt, "z"); title!(plt, "AIF Robot Trajectory (3D)")
             savefig(plt, params[:save_plot])
             try
                 println("Saved plot to: ", params[:save_plot])

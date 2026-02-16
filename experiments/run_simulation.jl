@@ -18,6 +18,7 @@ result = run_simulation(;
     β = cfg.β,
     ctrl_scale = cfg.ctrl_scale,
     nsteps_per_ctrl = cfg.nsteps_per_ctrl,
+    action_alpha = cfg.action_alpha,
     seed = cfg.seed,
     verbose = cfg.verbose,
 )

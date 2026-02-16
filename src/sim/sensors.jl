@@ -7,22 +7,24 @@ using LinearAlgebra
 
 export read_position, read_observation
 
-"""Read 2D position from MuJoCo qpos (first two elements for slide joints)."""
+"""Read 3D position from MuJoCo qpos (first three elements for slide joints x, y, z)."""
 function read_position(qpos::AbstractVector)
-    return [qpos[1], qpos[2]]
+    return [qpos[1], qpos[2], qpos[3]]
 end
 
 """Read full observation (position + optional noise).
 
-`obs_noise` is interpreted as observation variance (σ²). When adding noise
-we use standard deviation `sqrt(obs_noise)` so that other modules that treat
-`obs_noise` as variance remain consistent with the Bayesian formulas.
+obs_noise: scalar or [σ²_x, σ²_y, σ²_z] - variance per axis.
 """
-function read_observation(qpos; obs_noise::Real = 0.0, rng = nothing)
+function read_observation(qpos; obs_noise = 0.0, rng = nothing)
     qpos_vec = vec(collect(qpos))
     pos = read_position(qpos_vec)
-    if obs_noise > 0 && rng !== nothing
-        pos = pos .+ sqrt(obs_noise) .* randn(rng, 2)
+    if rng === nothing
+        return pos
+    end
+    σ² = obs_noise isa Real ? fill(obs_noise, 3) : Float64.(obs_noise[1:3])
+    for i in 1:3
+        σ²[i] > 0 && (pos[i] += sqrt(σ²[i]) * randn(rng))
     end
     return pos
 end
