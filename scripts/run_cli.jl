@@ -94,7 +94,7 @@ function render_panda_arm_from_history(history, params)
     for (i, p) in enumerate(positions)
         x = clamp(p[1], PANDA_X_MIN, PANDA_X_MAX)
         y = clamp(p[2], PANDA_Y_MIN, PANDA_Y_MAX)
-        z = clamp(p[3], PANDA_Z_MIN, PANDA_Z_MAX)
+        z = length(p) >= 3 ? clamp(p[3], PANDA_Z_MIN, PANDA_Z_MAX) : 0.3
         panda_traj[i + 1] = [x, y, z]
     end
 
@@ -180,6 +180,192 @@ function render_panda_arm_from_history(history, params)
     Base.invokelatest(MuJoCo.visualise!, model, data; controller = _panda_controller!)
 end
 
+"""Render Panda arm trajectory to GIF using offscreen rendering. Requires DISPLAY for OpenGL."""
+function render_panda_arm_to_gif(
+    history,
+    params,
+    gif_path::String;
+    width::Int = 480,
+    height::Int = 360,
+    fps::Int = 10,
+    stride::Int = 2,
+    wp_frames::Int = 10,
+    extra_frames::Int = 60,
+)
+    positions = getfield(history, :positions)
+    if length(positions) == 0
+        println("No positions in history; skipping GIF render.")
+        return
+    end
+
+    init_pos = params[:init_pos]
+    goal = params[:goal]
+    init_str = @sprintf("%.4f %.4f %.4f", init_pos[1], init_pos[2], init_pos[3])
+    goal_str = @sprintf("%.4f %.4f %.4f", goal[1], goal[2], goal[3])
+
+    scene_dir = normpath(joinpath(@__DIR__, ".."))
+    scene_path = joinpath(scene_dir, "panda_render_scene.xml")
+    xml_str = read(scene_path, String)
+    xml_str = replace(xml_str, "__INIT_POS__" => init_str, "__GOAL_POS__" => goal_str)
+    tmp_xml = joinpath(scene_dir, "panda_render_scene_tmp.xml")
+    write(tmp_xml, xml_str)
+
+    model = MuJoCo.load_model(tmp_xml)
+    rm(tmp_xml; force = true)
+    data  = MuJoCo.init_data(model)
+    MuJoCo.reset!(model, data)
+    MuJoCo.forward!(model, data)
+
+    for i in 1:7
+        actname = "actuator$(i)"
+        act_id = _require_id_local(model, MuJoCo.mjOBJ_ACTUATOR, actname)
+        joint_id = Int(model.actuator_trnid[act_id + 1, 1])
+        qadr     = Int(model.jnt_qposadr[joint_id + 1])
+        data.ctrl[act_id + 1] = data.qpos[qadr + 1]
+    end
+
+    panda_mocap_body_id = _require_id_local(model, MuJoCo.mjOBJ_BODY, "panda_mocap")
+    mocap_id = Int(model.body_mocapid[panda_mocap_body_id + 1])
+    mocap_row = mocap_id + 1
+    red_body_id = _require_id_local(model, MuJoCo.mjOBJ_BODY, "red_object")
+    red_mocap_row = Int(model.body_mocapid[red_body_id + 1]) + 1
+
+    box_half = 0.04
+    sphere_r = 0.025
+    red_on_box = [goal[1], goal[2], goal[3] + box_half + sphere_r]
+
+    init_clamped = [clamp(init_pos[1], PANDA_X_MIN, PANDA_X_MAX),
+                   clamp(init_pos[2], PANDA_Y_MIN, PANDA_Y_MAX),
+                   clamp(init_pos[3], PANDA_Z_MIN, PANDA_Z_MAX)]
+    panda_traj = Vector{Vector{Float64}}(undef, length(positions) + 1)
+    panda_traj[1] = init_clamped
+    for (i, p) in enumerate(positions)
+        x = clamp(p[1], PANDA_X_MIN, PANDA_X_MAX)
+        y = clamp(p[2], PANDA_Y_MIN, PANDA_Y_MAX)
+        z = length(p) >= 3 ? clamp(p[3], PANDA_Z_MIN, PANDA_Z_MAX) : 0.3
+        panda_traj[i + 1] = [x, y, z]
+    end
+
+    MuJoCo.init_visualiser()
+    GLFW = Main.GLFW
+    FFMPEG = Main.FFMPEG
+
+    # Hidden window for GL context
+    # Use invokelatest because init_visualiser() loads GLFW dynamically (world-age issues otherwise).
+    Base.invokelatest(GLFW.WindowHint, GLFW.VISIBLE, 0)
+    # Use the simple CreateWindow overload; GLFW.jl does not accept raw C_NULL pointers here.
+    window = Base.invokelatest(GLFW.CreateWindow, width, height, "MuJoCo GIF")
+    Base.invokelatest(GLFW.MakeContextCurrent, window)
+
+    # MuJoCo render setup
+    con = MuJoCo.Wrappers.RendererContext()
+    scn = MuJoCo.Wrappers.VisualiserScene()
+    opt = MuJoCo.Wrappers.VisualiserOption()
+    cam = MuJoCo.Wrappers.VisualiserCamera()
+    pert = MuJoCo.Wrappers.VisualiserPerturb()
+
+    LibMuJoCo = MuJoCo.LibMuJoCo
+    LibMuJoCo.mjv_makeScene(model, scn, 10000)
+    LibMuJoCo.mjr_makeContext(model, con, LibMuJoCo.mjFONTSCALE_150)
+    LibMuJoCo.mjr_resizeOffscreen(Cint(width), Cint(height), con)
+
+    # Use "watching" camera if present
+    cam_id = MuJoCo.mj_name2id(model, Cint(LibMuJoCo.mjOBJ_CAMERA), "watching")
+    if cam_id >= 0
+        cam.type = LibMuJoCo.mjCAMERA_FIXED
+        cam.fixedcamid = Cint(cam_id)
+    else
+        LibMuJoCo.mjv_defaultFreeCamera(model, cam)
+    end
+
+    rect = LibMuJoCo.mjrRect(Cint(0), Cint(0), Cint(width), Cint(height))
+    framebuf = Vector{UInt8}(undef, 3 * width * height)
+
+    # Start ffmpeg for GIF
+    dst = abspath(gif_path)
+    arg = `-y -f rawvideo -pixel_format rgb24 -video_size $(width)x$(height) -r $fps -i pipe:0 -vf "vflip" -r $fps $dst`
+    ff_cmd = `$(FFMPEG.ffmpeg) $arg`
+    # Avoid pipeline(...; stdout/stderr=devnull) here: on some Julia versions it routes through
+    # Base._spawn with FileRedirect and errors. Plain open(cmd, "w") is more compatible.
+    ff_io = open(ff_cmd, "w")
+
+    s = Dict(
+        :traj => panda_traj,
+        :idx => 1,
+        :gain => 0.02,
+        :stop_dist => 0.02,
+        :mocap_row => mocap_row,
+        :red_mocap_row => red_mocap_row,
+        :red_on_box => red_on_box,
+        :place_gain => 0.03,
+    )
+
+    nframes = 0
+    max_frames = length(panda_traj) * wp_frames + extra_frames
+
+    iter = 0
+    for _ in 1:max_frames
+        iter += 1
+        traj = s[:traj]
+        idx = s[:idx]
+        r = s[:mocap_row]
+        rr = s[:red_mocap_row]
+
+        if idx <= length(traj)
+            pos3d = traj[idx]
+            target = [pos3d[1], pos3d[2], pos3d[3]]
+            mp = [data.mocap_pos[r, 1], data.mocap_pos[r, 2], data.mocap_pos[r, 3]]
+            dx = target .- mp
+            if sqrt(sum(dx.^2)) > s[:stop_dist]
+                mp .+= s[:gain] .* dx
+            else
+                s[:idx] = idx + 1
+            end
+            data.mocap_pos[r, 1] = mp[1]
+            data.mocap_pos[r, 2] = mp[2]
+            data.mocap_pos[r, 3] = mp[3]
+            if idx >= 2
+                if !haskey(s, :red_pos)
+                    s[:red_pos] = [data.mocap_pos[rr, 1], data.mocap_pos[rr, 2], data.mocap_pos[rr, 3]]
+                end
+                red_pos = s[:red_pos]
+                red_pos .+= RED_FOLLOW_GAIN .* (mp .- red_pos)
+                data.mocap_pos[rr, 1] = red_pos[1]
+                data.mocap_pos[rr, 2] = red_pos[2]
+                data.mocap_pos[rr, 3] = red_pos[3]
+            end
+        else
+            rp = [data.mocap_pos[rr, 1], data.mocap_pos[rr, 2], data.mocap_pos[rr, 3]]
+            dest = s[:red_on_box]
+            dr = dest .- rp
+            if sqrt(sum(dr.^2)) > 0.005
+                rp .+= s[:place_gain] .* dr
+                data.mocap_pos[rr, 1] = rp[1]
+                data.mocap_pos[rr, 2] = rp[2]
+                data.mocap_pos[rr, 3] = rp[3]
+            else
+                break  # Done
+            end
+        end
+
+        MuJoCo.forward!(model, data)
+        if iter % stride == 0
+            LibMuJoCo.mjr_setBuffer(LibMuJoCo.mjFB_OFFSCREEN, con)
+            LibMuJoCo.mjv_updateScene(model, data, opt, pert, cam, LibMuJoCo.mjCAT_ALL, scn)
+            LibMuJoCo.mjr_render(rect, scn, con)
+            LibMuJoCo.mjr_readPixels(pointer(framebuf), C_NULL, rect, con)
+            write(ff_io, framebuf)
+            nframes += 1
+        end
+    end
+
+    close(ff_io)
+    Base.invokelatest(GLFW.DestroyWindow, window)
+
+    @printf("Saved %d frames to %s\n", nframes, dst)
+    flush(stdout)
+end
+
 # Global holders used by MuJoCo visualisers to avoid closure/world-age issues
 const MUJOCO_VIS_STATE = Ref{Any}(nothing)
 const PANDA_VIS_STATE  = Ref{Any}(nothing)
@@ -210,6 +396,7 @@ function _panda_aif_controller!(m, d)
         s[:prev_smooth_ctrl] = [0.0, 0.0, 0.0]
         s[:ctrl_step_count] = 0
         s[:red_pos] = copy(env.init_pos)
+        s[:stop_printed] = false
     end
 
     s[:phys_step] += 1
@@ -314,6 +501,12 @@ function _panda_aif_controller!(m, d)
 
     # Belief update and history (use EE pos as obs)
     if nspc <= 1 || (s[:phys_step] % nspc == 0)
+        # If we already hit a stop condition, keep the state stable and avoid spamming logs.
+        if get(s, :should_stop, false)
+            PANDA_AIF_VIS_STATE[] = s
+            return nothing
+        end
+
         obs = mp .+ (params[:obs_noise] > 0 ? sqrt(params[:obs_noise]) .* randn(rng, 3) : zeros(3))
         AIFMuJoCoRobot.update_belief!(belief, obs; obs_noise = params[:obs_noise])
 
@@ -330,13 +523,16 @@ function _panda_aif_controller!(m, d)
         end
 
         if s[:step_counter] >= params[:steps] || get(s, :stage, "") == "done"
-            if get(s, :stage, "") == "done"
-                @printf("Panda AIF: completed pick-and-place in %d steps.\n", s[:step_counter])
-            else
-                println("Reached requested step count; exiting visualiser.")
+            if !get(s, :stop_printed, false)
+                if get(s, :stage, "") == "done"
+                    @printf("Panda AIF: completed pick-and-place in %d steps.\n", s[:step_counter])
+                else
+                    println("Reached requested step count; exiting visualiser.")
+                end
+                flush(stdout)
+                s[:stop_printed] = true
             end
-            flush(stdout)
-            exit(0)
+            s[:should_stop] = true
         end
     end
 
@@ -481,6 +677,22 @@ function parse_args()
         :save_plot => "",
         :render => false,
         :renderarm => false,
+        :save_gif => "",
+        :save_mp4 => "",
+        # GIF tuning (used by --save_gif). Defaults are chosen for speed.
+        :gif_width => 480,
+        :gif_height => 360,
+        :gif_fps => 10,
+        :gif_stride => 2,          # capture every Nth render step (2 = 2x fewer frames)
+        :gif_wp_frames => 10,      # max render steps per waypoint (lower = faster)
+        :gif_extra_frames => 60,   # extra render steps after final waypoint
+        # MP4 tuning (used by --save_mp4). Defaults favor smooth playback.
+        :mp4_width => 640,
+        :mp4_height => 480,
+        :mp4_fps => 30,
+        :mp4_stride => 1,
+        :mp4_wp_frames => 10,
+        :mp4_extra_frames => 60,
         :panda => false,
         :steps_per_sec => 0.0,  # 0 = no limit; e.g. 4 = 4 control steps/sec for viewable playback
         :agent_color => nothing,
@@ -556,12 +768,223 @@ function parse_args()
         elseif a == "--speed"
             # Control steps per second for visualiser (e.g. 4 = 4 steps/sec). 0 = no limit.
             params[:steps_per_sec] = parse(Float64, args[i+1]); i += 2
+        elseif a == "--save_gif"
+            params[:save_gif] = args[i+1]; i += 2
+        elseif a == "--gif_size"
+            # width height
+            params[:gif_width] = parse(Int, args[i+1])
+            params[:gif_height] = parse(Int, args[i+2])
+            i += 3
+        elseif a == "--gif_fps"
+            params[:gif_fps] = parse(Int, args[i+1]); i += 2
+        elseif a == "--gif_stride"
+            params[:gif_stride] = max(1, parse(Int, args[i+1])); i += 2
+        elseif a == "--gif_wp_frames"
+            params[:gif_wp_frames] = max(1, parse(Int, args[i+1])); i += 2
+        elseif a == "--gif_extra_frames"
+            params[:gif_extra_frames] = max(0, parse(Int, args[i+1])); i += 2
+        elseif a == "--save_mp4"
+            params[:save_mp4] = args[i+1]; i += 2
+        elseif a == "--mp4_size"
+            params[:mp4_width] = parse(Int, args[i+1])
+            params[:mp4_height] = parse(Int, args[i+2])
+            i += 3
+        elseif a == "--mp4_fps"
+            params[:mp4_fps] = parse(Int, args[i+1]); i += 2
+        elseif a == "--mp4_stride"
+            params[:mp4_stride] = max(1, parse(Int, args[i+1])); i += 2
+        elseif a == "--mp4_wp_frames"
+            params[:mp4_wp_frames] = max(1, parse(Int, args[i+1])); i += 2
+        elseif a == "--mp4_extra_frames"
+            params[:mp4_extra_frames] = max(0, parse(Int, args[i+1])); i += 2
         else
             println("Unknown arg: ", a)
             i += 1
         end
     end
     return params
+end
+
+"""Render Panda arm trajectory to MP4 using offscreen rendering. Requires DISPLAY for OpenGL."""
+function render_panda_arm_to_mp4(
+    history,
+    params,
+    mp4_path::String;
+    width::Int = 640,
+    height::Int = 480,
+    fps::Int = 30,
+    stride::Int = 1,
+    wp_frames::Int = 10,
+    extra_frames::Int = 60,
+    crf::Int = 28,
+)
+    positions = getfield(history, :positions)
+    if length(positions) == 0
+        println("No positions in history; skipping MP4 render.")
+        return
+    end
+
+    init_pos = params[:init_pos]
+    goal = params[:goal]
+    init_str = @sprintf("%.4f %.4f %.4f", init_pos[1], init_pos[2], init_pos[3])
+    goal_str = @sprintf("%.4f %.4f %.4f", goal[1], goal[2], goal[3])
+
+    scene_dir = normpath(joinpath(@__DIR__, ".."))
+    scene_path = joinpath(scene_dir, "panda_render_scene.xml")
+    xml_str = read(scene_path, String)
+    xml_str = replace(xml_str, "__INIT_POS__" => init_str, "__GOAL_POS__" => goal_str)
+    tmp_xml = joinpath(scene_dir, "panda_render_scene_tmp.xml")
+    write(tmp_xml, xml_str)
+
+    model = MuJoCo.load_model(tmp_xml)
+    rm(tmp_xml; force = true)
+    data  = MuJoCo.init_data(model)
+    MuJoCo.reset!(model, data)
+    MuJoCo.forward!(model, data)
+
+    for i in 1:7
+        actname = "actuator$(i)"
+        act_id = _require_id_local(model, MuJoCo.mjOBJ_ACTUATOR, actname)
+        joint_id = Int(model.actuator_trnid[act_id + 1, 1])
+        qadr     = Int(model.jnt_qposadr[joint_id + 1])
+        data.ctrl[act_id + 1] = data.qpos[qadr + 1]
+    end
+
+    panda_mocap_body_id = _require_id_local(model, MuJoCo.mjOBJ_BODY, "panda_mocap")
+    mocap_id = Int(model.body_mocapid[panda_mocap_body_id + 1])
+    mocap_row = mocap_id + 1
+    red_body_id = _require_id_local(model, MuJoCo.mjOBJ_BODY, "red_object")
+    red_mocap_row = Int(model.body_mocapid[red_body_id + 1]) + 1
+
+    box_half = 0.04
+    sphere_r = 0.025
+    red_on_box = [goal[1], goal[2], goal[3] + box_half + sphere_r]
+
+    init_clamped = [clamp(init_pos[1], PANDA_X_MIN, PANDA_X_MAX),
+                   clamp(init_pos[2], PANDA_Y_MIN, PANDA_Y_MAX),
+                   clamp(init_pos[3], PANDA_Z_MIN, PANDA_Z_MAX)]
+    panda_traj = Vector{Vector{Float64}}(undef, length(positions) + 1)
+    panda_traj[1] = init_clamped
+    for (i, p) in enumerate(positions)
+        x = clamp(p[1], PANDA_X_MIN, PANDA_X_MAX)
+        y = clamp(p[2], PANDA_Y_MIN, PANDA_Y_MAX)
+        z = length(p) >= 3 ? clamp(p[3], PANDA_Z_MIN, PANDA_Z_MAX) : 0.3
+        panda_traj[i + 1] = [x, y, z]
+    end
+
+    MuJoCo.init_visualiser()
+    GLFW = Main.GLFW
+    FFMPEG = Main.FFMPEG
+
+    # Hidden window for GL context (world-age safe)
+    Base.invokelatest(GLFW.WindowHint, GLFW.VISIBLE, 0)
+    window = Base.invokelatest(GLFW.CreateWindow, width, height, "MuJoCo MP4")
+    Base.invokelatest(GLFW.MakeContextCurrent, window)
+
+    con = MuJoCo.Wrappers.RendererContext()
+    scn = MuJoCo.Wrappers.VisualiserScene()
+    opt = MuJoCo.Wrappers.VisualiserOption()
+    cam = MuJoCo.Wrappers.VisualiserCamera()
+    pert = MuJoCo.Wrappers.VisualiserPerturb()
+
+    LibMuJoCo = MuJoCo.LibMuJoCo
+    LibMuJoCo.mjv_makeScene(model, scn, 10000)
+    LibMuJoCo.mjr_makeContext(model, con, LibMuJoCo.mjFONTSCALE_150)
+    LibMuJoCo.mjr_resizeOffscreen(Cint(width), Cint(height), con)
+
+    cam_id = MuJoCo.mj_name2id(model, Cint(LibMuJoCo.mjOBJ_CAMERA), "watching")
+    if cam_id >= 0
+        cam.type = LibMuJoCo.mjCAMERA_FIXED
+        cam.fixedcamid = Cint(cam_id)
+    else
+        LibMuJoCo.mjv_defaultFreeCamera(model, cam)
+    end
+
+    rect = LibMuJoCo.mjrRect(Cint(0), Cint(0), Cint(width), Cint(height))
+    framebuf = Vector{UInt8}(undef, 3 * width * height)
+
+    dst = abspath(mp4_path)
+    # H.264 encoding tuned for speed.
+    # vflip is required because mjr_readPixels returns bottom-up.
+    arg = `-y -f rawvideo -pixel_format rgb24 -video_size $(width)x$(height) -r $fps -i pipe:0 -vf "vflip" -c:v libx264 -preset ultrafast -crf $crf -pix_fmt yuv420p -movflags +faststart $dst`
+    ff_cmd = `$(FFMPEG.ffmpeg) $arg`
+    ff_io = open(ff_cmd, "w")
+
+    s = Dict(
+        :traj => panda_traj,
+        :idx => 1,
+        :gain => 0.02,
+        :stop_dist => 0.02,
+        :mocap_row => mocap_row,
+        :red_mocap_row => red_mocap_row,
+        :red_on_box => red_on_box,
+        :place_gain => 0.03,
+    )
+
+    nframes = 0
+    max_frames = length(panda_traj) * wp_frames + extra_frames
+
+    iter = 0
+    for _ in 1:max_frames
+        iter += 1
+        traj = s[:traj]
+        idx = s[:idx]
+        r = s[:mocap_row]
+        rr = s[:red_mocap_row]
+
+        if idx <= length(traj)
+            pos3d = traj[idx]
+            target = [pos3d[1], pos3d[2], pos3d[3]]
+            mp = [data.mocap_pos[r, 1], data.mocap_pos[r, 2], data.mocap_pos[r, 3]]
+            dx = target .- mp
+            if sqrt(sum(dx.^2)) > s[:stop_dist]
+                mp .+= s[:gain] .* dx
+            else
+                s[:idx] = idx + 1
+            end
+            data.mocap_pos[r, 1] = mp[1]
+            data.mocap_pos[r, 2] = mp[2]
+            data.mocap_pos[r, 3] = mp[3]
+            if idx >= 2
+                if !haskey(s, :red_pos)
+                    s[:red_pos] = [data.mocap_pos[rr, 1], data.mocap_pos[rr, 2], data.mocap_pos[rr, 3]]
+                end
+                red_pos = s[:red_pos]
+                red_pos .+= RED_FOLLOW_GAIN .* (mp .- red_pos)
+                data.mocap_pos[rr, 1] = red_pos[1]
+                data.mocap_pos[rr, 2] = red_pos[2]
+                data.mocap_pos[rr, 3] = red_pos[3]
+            end
+        else
+            rp = [data.mocap_pos[rr, 1], data.mocap_pos[rr, 2], data.mocap_pos[rr, 3]]
+            dest = s[:red_on_box]
+            dr = dest .- rp
+            if sqrt(sum(dr.^2)) > 0.005
+                rp .+= s[:place_gain] .* dr
+                data.mocap_pos[rr, 1] = rp[1]
+                data.mocap_pos[rr, 2] = rp[2]
+                data.mocap_pos[rr, 3] = rp[3]
+            else
+                break
+            end
+        end
+
+        MuJoCo.forward!(model, data)
+        if iter % stride == 0
+            LibMuJoCo.mjr_setBuffer(LibMuJoCo.mjFB_OFFSCREEN, con)
+            LibMuJoCo.mjv_updateScene(model, data, opt, pert, cam, LibMuJoCo.mjCAT_ALL, scn)
+            LibMuJoCo.mjr_render(rect, scn, con)
+            LibMuJoCo.mjr_readPixels(pointer(framebuf), C_NULL, rect, con)
+            write(ff_io, framebuf)
+            nframes += 1
+        end
+    end
+
+    close(ff_io)
+    Base.invokelatest(GLFW.DestroyWindow, window)
+
+    @printf("Saved %d frames to %s\n", nframes, dst)
+    flush(stdout)
 end
 
 function main()
@@ -708,6 +1131,44 @@ function main()
                             last_step = step
                         end
                         if step >= params[:steps] || get(s, :stage, "") == "done" || istaskdone(vis_task)
+                            # Save GIF before exit (controller may call exit(0) when done)
+                            gif_path = get(params, :save_gif, "")
+                            if gif_path != "" && s !== nothing && haskey(s, :history)
+                                hist = (positions = s[:history][:positions], beliefs_mean = s[:history][:beliefs_mean], actions = s[:history][:actions], efe_history = s[:history][:efe_history])
+                                try
+                                    render_panda_arm_to_gif(
+                                        hist,
+                                        params,
+                                        gif_path;
+                                        width = params[:gif_width],
+                                        height = params[:gif_height],
+                                        fps = params[:gif_fps],
+                                        stride = params[:gif_stride],
+                                        wp_frames = params[:gif_wp_frames],
+                                        extra_frames = params[:gif_extra_frames],
+                                    )
+                                    mp4_path = get(params, :save_mp4, "")
+                                    if mp4_path != ""
+                                        render_panda_arm_to_mp4(
+                                            hist,
+                                            params,
+                                            mp4_path;
+                                            width = params[:mp4_width],
+                                            height = params[:mp4_height],
+                                            fps = params[:mp4_fps],
+                                            stride = params[:mp4_stride],
+                                            wp_frames = params[:mp4_wp_frames],
+                                            extra_frames = params[:mp4_extra_frames],
+                                        )
+                                    end
+                                catch err
+                                    try
+                                        println("GIF save failed: ", typeof(err), " — ", sprint(showerror, err, catch_backtrace()))
+                                        flush(stdout)
+                                    catch
+                                    end
+                                end
+                            end
                             break
                         end
                     end
@@ -944,6 +1405,54 @@ function main()
         catch err
             try
                 println("Panda arm render failed: ", err)
+                flush(stdout)
+            catch
+            end
+        end
+    end
+
+    # Optional: save simulation as GIF (Panda arm trajectory or AIF path).
+    gif_path = get(params, :save_gif, "")
+    if gif_path != "" && res !== nothing && haskey(res, :history)
+        try
+            render_panda_arm_to_gif(
+                res.history,
+                params,
+                gif_path;
+                width = params[:gif_width],
+                height = params[:gif_height],
+                fps = params[:gif_fps],
+                stride = params[:gif_stride],
+                wp_frames = params[:gif_wp_frames],
+                extra_frames = params[:gif_extra_frames],
+            )
+        catch err
+            try
+                println("GIF save failed: ", typeof(err), " — ", sprint(showerror, err, catch_backtrace()))
+                flush(stdout)
+            catch
+            end
+        end
+    end
+
+    # Optional: save simulation as MP4 (faster than GIF).
+    mp4_path = get(params, :save_mp4, "")
+    if mp4_path != "" && res !== nothing && haskey(res, :history)
+        try
+            render_panda_arm_to_mp4(
+                res.history,
+                params,
+                mp4_path;
+                width = params[:mp4_width],
+                height = params[:mp4_height],
+                fps = params[:mp4_fps],
+                stride = params[:mp4_stride],
+                wp_frames = params[:mp4_wp_frames],
+                extra_frames = params[:mp4_extra_frames],
+            )
+        catch err
+            try
+                println("MP4 save failed: ", typeof(err), " — ", sprint(showerror, err, catch_backtrace()))
                 flush(stdout)
             catch
             end
