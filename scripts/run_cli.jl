@@ -41,7 +41,7 @@ function render_panda_arm_from_history(history, params)
     goal_str = @sprintf("%.4f %.4f %.4f", goal[1], goal[2], goal[3])
 
     MuJoCo.init_visualiser()
-    scene_dir = normpath(joinpath(@__DIR__, "..", ".."))
+    scene_dir = normpath(joinpath(@__DIR__, ".."))
     scene_path = joinpath(scene_dir, "panda_render_scene.xml")
     xml_str = read(scene_path, String)
     xml_str = replace(xml_str, "__INIT_POS__" => init_str, "__GOAL_POS__" => goal_str)
