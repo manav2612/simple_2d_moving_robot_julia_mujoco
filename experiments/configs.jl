@@ -4,7 +4,7 @@ Per-dimension (x, y, z) noise supported for obs_noise and process_noise.
 """
 module Configs
 
-export default_config, config_goal_seeking, config_exploration
+export default_config, config_goal_seeking, config_exploration, config_panda_try
 
 """Default configuration (tuned for smooth, stable 3D goal-reaching).
 
@@ -40,6 +40,24 @@ end
 function config_exploration()
     c = default_config()
     return merge(c, (γ = 0.5, β = 0.2, action_alpha = 0.6))
+end
+
+"""Panda pick-and-place: goal-seeking AIF tuned for reach/drop like real robots.
+- Higher γ, lower β for direct goal-directed motion
+- Lower obs_noise for precise hand tracking
+- More physics steps per control for smooth arm motion
+"""
+function config_panda_try()
+    c = default_config()
+    return merge(c, (
+        γ = 2.5,                    # strong goal-seeking (pragmatic)
+        β = 0.01,                   # low exploration (deterministic path)
+        obs_noise = 0.002,          # trust observations (precise hand position)
+        process_noise = 0.001,      # stable prediction
+        ctrl_scale = 3.5,           # slightly larger steps when far
+        nsteps_per_ctrl = 4,        # more frequent AIF updates for responsive motion
+        action_alpha = 0.25,        # smoother trajectory (75% prev retained)
+    ))
 end
 
 end

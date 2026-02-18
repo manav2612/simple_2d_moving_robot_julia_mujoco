@@ -11,12 +11,12 @@ using Random
 using Plots
 
 # Workspace bounds chosen to stay inside Panda arm's reachable region.
-const PANDA_X_MIN = 0.2
-const PANDA_X_MAX = 0.8
-const PANDA_Y_MIN = -0.4
-const PANDA_Y_MAX = 0.4
-const PANDA_Z_MIN = 0.1
-const PANDA_Z_MAX = 0.5
+const PANDA_X_MIN  = 0
+const PANDA_X_MAX = 1
+const PANDA_Y_MIN = 0
+const PANDA_Y_MAX = 1
+const PANDA_Z_MIN = 0
+const PANDA_Z_MAX = 1  # allow higher for approach (avoid clamping arm above object)
 
 function _require_id_local(model::MuJoCo.Model, objtype, name::AbstractString)
     id = MuJoCo.mj_name2id(model, Cint(objtype), name)
@@ -184,13 +184,240 @@ end
 const MUJOCO_VIS_STATE = Ref{Any}(nothing)
 const PANDA_VIS_STATE  = Ref{Any}(nothing)
 const PANDA_AIF_VIS_STATE = Ref{Any}(nothing)
+const PANDA_TRY_AIF_VIS_STATE = Ref{Any}(nothing)
 
 # Smoothness parameters for Panda AIF controller
 const RED_FOLLOW_GAIN = 0.08
 const MOCAP_GAIN = 0.02
+const MOCAP_GAIN_CLOSE = 0.035   # keep moving when near target (was 0.015 - too slow)
+const MOCAP_GAIN_FAR = 0.06      # faster when far
+const MOCAP_DEADBAND = 0.002     # only stop when within 2mm (was 5mm - caused premature stall)
+const MOCAP_MAX_STEP = 0.008     # max meters per physics step (slightly higher for gradual descent)
 const STOP_DIST = 0.03
+const ABOVE_DIST = 0.04          # switch phases when within this
+const ABOVE_HEIGHT = 0.12        # approach from this height above object (like real robots)
+const HORIZ_DIST = 0.03         # switch from horizontal align to descend when x,y within this
+const DESCEND_STEP = 0.04       # descend 4cm per waypoint to avoid self-collision
 const PICK_DWELL_STEPS = 20
 const PLACE_GAIN = 0.03
+const LIFT_HEIGHT = 0.25
+const GRIPPER_OPEN = 0.04
+const GRIPPER_CLOSED = 0.0
+
+"""Apply improved mocap control: adaptive gain, deadband, velocity clamp."""
+function _mocap_step!(mp::Vector{Float64}, target::Vector{Float64})
+    delta = target .- mp
+    dist = sqrt(sum(delta.^2))
+    if dist < MOCAP_DEADBAND
+        return  # deadband: avoid oscillation
+    end
+    gain = if dist < 0.02
+        MOCAP_GAIN_CLOSE
+    else
+        min(MOCAP_GAIN_FAR, MOCAP_GAIN + 0.015 * dist)
+    end
+    delta = gain .* (target .- mp)
+    delta_norm = sqrt(sum(delta.^2))
+    if delta_norm > MOCAP_MAX_STEP
+        delta .*= (MOCAP_MAX_STEP / delta_norm)
+    end
+    mp .+= delta
+end
+
+function _panda_try_aif_controller!(m, d)
+    s = PANDA_TRY_AIF_VIS_STATE[]
+    if s === nothing
+        return nothing
+    end
+
+    env = s[:env]
+    belief = s[:belief]
+    params = s[:params]
+    rng = s[:rng]
+    history = s[:history]
+
+    if !haskey(s, :phys_step)
+        s[:phys_step] = 0
+        s[:last_ctrl] = [0.0, 0.0, 0.0]
+        s[:prev_smooth_ctrl] = [0.0, 0.0, 0.0]
+        s[:ctrl_step_count] = 0
+        s[:reach_phase] = 1   # 1=align x,y, 2=descend to above, 3=descend to grasp
+        s[:drop_phase] = 1    # 1=align x,y, 2=descend to above, 3=descend to place
+    end
+
+    s[:phys_step] += 1
+    nspc = params[:nsteps_per_ctrl]
+    stage = s[:stage]
+    robot_pos = params[:robot_pos]
+
+    mp = @views collect(d.mocap_pos[env.mocap_row, :])
+    ee_pos = AIFMuJoCoRobot.PandaTryEnv.get_position(env)
+    obj_pos = AIFMuJoCoRobot.PandaTryEnv.get_obj_pos(env)
+    target_pos = AIFMuJoCoRobot.PandaTryEnv.get_target_pos(env)
+
+    # Two-phase reach (like real robots): above object first, then descend
+    approach_offset = [0.0, 0.0, 0.08]
+    obj_approach = obj_pos .+ approach_offset
+    target_approach = target_pos .+ approach_offset
+    above_obj = [obj_pos[1], obj_pos[2], obj_pos[3] + ABOVE_HEIGHT]
+
+    # AIF goal: horizontal-first (align x,y then descend) to avoid arm self-collision
+    if stage == "reach"
+        if s[:reach_phase] == 1
+            # Phase 1: align x,y, keep z (avoid self-collision during horizontal move)
+            aif_goal = [obj_pos[1], obj_pos[2], ee_pos[3]]
+            dist_xy = sqrt((ee_pos[1] - obj_pos[1])^2 + (ee_pos[2] - obj_pos[2])^2)
+            if dist_xy < HORIZ_DIST
+                s[:reach_phase] = 2
+            end
+        elseif s[:reach_phase] == 2
+            # Phase 2: gradual descent to above object (avoid self-collision)
+            target_z = max(above_obj[3], ee_pos[3] - DESCEND_STEP)
+            aif_goal = [obj_pos[1], obj_pos[2], target_z]
+            if ee_pos[3] <= above_obj[3] + ABOVE_DIST
+                s[:reach_phase] = 3
+            end
+        else
+            # Phase 3: descend to grasp height
+            aif_goal = obj_approach
+        end
+    elseif stage == "drop"
+        above_target = [target_pos[1], target_pos[2], target_pos[3] + ABOVE_HEIGHT]
+        if get(s, :drop_phase, 1) == 1
+            aif_goal = [target_pos[1], target_pos[2], ee_pos[3]]
+            dist_xy = sqrt((ee_pos[1] - target_pos[1])^2 + (ee_pos[2] - target_pos[2])^2)
+            if dist_xy < HORIZ_DIST
+                s[:drop_phase] = 2
+            end
+        elseif get(s, :drop_phase, 2) == 2
+            target_z = max(above_target[3], ee_pos[3] - DESCEND_STEP)
+            aif_goal = [target_pos[1], target_pos[2], target_z]
+            if ee_pos[3] <= above_target[3] + ABOVE_DIST
+                s[:drop_phase] = 3
+            end
+        else
+            aif_goal = target_approach
+        end
+    else
+        aif_goal = [0.0, 0.0, 0.0]
+    end
+
+    # Adaptive ctrl_scale: larger steps when far from goal
+    dist_to_goal = sqrt(sum((ee_pos .- aif_goal).^2))
+    ctrl_scale = params[:ctrl_scale] * (1.0 + 0.15 * min(dist_to_goal / 0.1, 2.0))
+
+    compute_now = (nspc <= 1) || (s[:phys_step] % nspc == 1)
+    if compute_now && stage in ("reach", "drop")
+        result = AIFMuJoCoRobot.AIFController.compute_control(
+            belief, aif_goal;
+            γ = params[:γ], β = params[:β], ctrl_scale = ctrl_scale
+        )
+        α_smooth = get(params, :action_alpha, 0.3)
+        s[:ctrl_step_count] += 1
+        raw_ctrl = result.ctrl
+        smoothed = s[:ctrl_step_count] <= 1 ? copy(raw_ctrl) :
+            α_smooth .* raw_ctrl .+ (1.0 - α_smooth) .* s[:prev_smooth_ctrl]
+        s[:prev_smooth_ctrl] = copy(smoothed)
+        s[:last_ctrl] = smoothed
+        s[:last_action] = result.action
+        s[:last_efe] = result.efe
+        try
+            AIFMuJoCoRobot.predict_belief!(belief, smoothed; process_noise = params[:process_noise])
+        catch
+        end
+    end
+
+    # Update mocap (arm) with improved control: adaptive gain, deadband, velocity clamp
+    if stage == "reach" || stage == "drop"
+        target = mp .+ s[:last_ctrl]
+        _mocap_step!(mp, target)
+    elseif stage == "lift"
+        hold_pos = s[:hold_pos]
+        lift_target = hold_pos .+ [0.0, 0.0, LIFT_HEIGHT]
+        _mocap_step!(mp, lift_target)
+    end
+
+    mp[1] = clamp(mp[1], PANDA_X_MIN, PANDA_X_MAX)
+    mp[2] = clamp(mp[2], PANDA_Y_MIN, PANDA_Y_MAX)
+    mp[3] = clamp(mp[3], PANDA_Z_MIN, PANDA_Z_MAX)
+
+    @views for j in 1:3
+        d.mocap_pos[env.mocap_row, j] = mp[j]
+    end
+
+    # Arm joint ctrl = current qpos so actuators don't fight the weld; weld pulls the arm to follow mocap.
+    for i in 1:7
+        actname = "actuator$(i)"
+        act_id = MuJoCo.mj_name2id(env.model, MuJoCo.mjOBJ_ACTUATOR, actname)
+        if act_id >= 0
+            joint_id = Int(env.model.actuator_trnid[act_id + 1, 1])
+            qadr = Int(env.model.jnt_qposadr[joint_id + 1])
+            d.ctrl[act_id + 1] = d.qpos[qadr + 1]
+        end
+    end
+
+    # Gripper: open except during grasp and carry
+    if stage in ("reach", "place", "done")
+        d.ctrl[env.grip_r_id + 1] = GRIPPER_OPEN
+        d.ctrl[env.grip_l_id + 1] = GRIPPER_OPEN
+    else
+        d.ctrl[env.grip_r_id + 1] = GRIPPER_CLOSED
+        d.ctrl[env.grip_l_id + 1] = GRIPPER_CLOSED
+    end
+
+    # Stage transitions (use ee_pos - actual hand - since arm may lag behind mocap)
+    if stage == "reach" && sqrt(sum((ee_pos .- obj_approach).^2)) < STOP_DIST
+        s[:stage] = "grasp"
+        s[:grasp_dwell] = 0
+    elseif stage == "grasp"
+        s[:grasp_dwell] = get(s, :grasp_dwell, 0) + 1
+        if s[:grasp_dwell] >= PICK_DWELL_STEPS
+            s[:stage] = "lift"
+            s[:hold_pos] = copy(mp)
+        end
+    elseif stage == "lift" && sqrt(sum((ee_pos .- (s[:hold_pos] .+ [0.0, 0.0, LIFT_HEIGHT])).^2)) < STOP_DIST
+        s[:stage] = "drop"
+        s[:drop_phase] = 1  # horizontal-first for place too
+    elseif stage == "drop" && sqrt(sum((ee_pos .- target_approach).^2)) < STOP_DIST
+        s[:stage] = "place"
+        s[:place_dwell] = 0
+    elseif stage == "place"
+        s[:place_dwell] = get(s, :place_dwell, 0) + 1
+        if s[:place_dwell] >= PICK_DWELL_STEPS
+            s[:stage] = "done"
+        end
+    end
+
+    if nspc <= 1 || (s[:phys_step] % nspc == 0)
+        # Observation = actual hand position (EE site) for AIF
+        obs = ee_pos .+ (params[:obs_noise] > 0 ? sqrt(params[:obs_noise]) .* randn(rng, 3) : zeros(3))
+        AIFMuJoCoRobot.update_belief!(belief, obs; obs_noise = params[:obs_noise])
+
+        s[:step_counter] = get(s, :step_counter, 0) + 1
+        push!(history[:positions], copy(ee_pos))
+        push!(history[:beliefs_mean], copy(belief.mean))
+        push!(history[:actions], copy(get(s, :last_action, [0.0, 0.0, 0.0])))
+        push!(history[:efe_history], get(s, :last_efe, 0.0))
+
+        sps = get(params, :steps_per_sec, 0.0)
+        if sps > 0
+            sleep(1.0 / sps)
+        end
+
+        if s[:step_counter] >= params[:steps] || get(s, :stage, "") == "done"
+            if get(s, :stage, "") == "done"
+                @printf("Panda try AIF: completed pick-and-place in %d steps.\n", s[:step_counter])
+            else
+                println("Reached requested step count; exiting visualiser.")
+            end
+            flush(stdout)
+            exit(0)
+        end
+    end
+
+    PANDA_TRY_AIF_VIS_STATE[] = s
+    return nothing
+end
 
 function _panda_aif_controller!(m, d)
     s = PANDA_AIF_VIS_STATE[]
@@ -247,10 +474,10 @@ function _panda_aif_controller!(m, d)
         end
     end
 
-    # Update mocap (arm) toward target
+    # Update mocap (arm) with improved control: adaptive gain, deadband, velocity clamp
     if stage in ("reach", "drop")
         target = mp .+ s[:last_ctrl]
-        mp .+= MOCAP_GAIN .* (target .- mp)
+        _mocap_step!(mp, target)
     end
 
     # Clamp to workspace
@@ -260,6 +487,17 @@ function _panda_aif_controller!(m, d)
 
     @views for j in 1:3
         d.mocap_pos[env.mocap_row, j] = mp[j]
+    end
+
+    # Arm joint ctrl = current qpos so actuators don't fight the weld; weld pulls the arm to follow mocap.
+    for i in 1:7
+        actname = "actuator$(i)"
+        act_id = MuJoCo.mj_name2id(env.model, MuJoCo.mjOBJ_ACTUATOR, actname)
+        if act_id >= 0
+            joint_id = Int(env.model.actuator_trnid[act_id + 1, 1])
+            qadr = Int(env.model.jnt_qposadr[joint_id + 1])
+            d.ctrl[act_id + 1] = d.qpos[qadr + 1]
+        end
     end
 
     # Red ball: stage 1 stays at init; stage 2-3 smooth follow; stage 4 place on box
@@ -501,6 +739,10 @@ function parse_args()
         elseif a == "--panda"
             params[:panda] = true
             params[:render] = true
+            pt = AIFMuJoCoRobot.Configs.config_panda_try()
+            for k in (:γ, :β, :obs_noise, :process_noise, :ctrl_scale, :nsteps_per_ctrl, :action_alpha)
+                params[k] = get(pt, k, params[k])
+            end
             i += 1
         elseif a == "--obs_noise"
             params[:obs_noise] = parse(Float64, args[i+1]); i += 2
@@ -587,6 +829,10 @@ function main()
                 h = PANDA_AIF_VIS_STATE[][:history]
                 candidate = (env = nothing, belief = nothing, history = (positions = h[:positions], beliefs_mean = h[:beliefs_mean], actions = h[:actions], efe_history = h[:efe_history]), converged = get(PANDA_AIF_VIS_STATE[], :stage, "") == "done")
             end
+            if candidate === nothing && PANDA_TRY_AIF_VIS_STATE[] !== nothing && haskey(PANDA_TRY_AIF_VIS_STATE[], :history)
+                h = PANDA_TRY_AIF_VIS_STATE[][:history]
+                candidate = (env = nothing, belief = nothing, history = (positions = h[:positions], beliefs_mean = h[:beliefs_mean], actions = h[:actions], efe_history = h[:efe_history]), converged = get(PANDA_TRY_AIF_VIS_STATE[], :stage, "") == "done")
+            end
 
             if candidate !== nothing && params[:save_plot] != ""
                 try
@@ -661,20 +907,21 @@ function main()
                     action_alpha = params[:action_alpha],
                 )
             elseif params[:panda]
-                # Panda + AIF integrated: AIF drives Panda arm directly
-                logmsg("Panda mode: AIF-driven Panda arm (robot_pos -> init -> pick -> goal)")
+                # Panda try + AIF: box=object, red dot=target. AIF drives arm (move_arm.py logic).
+                logmsg("Panda try mode: AIF-driven arm, box=object, red dot=place target")
                 MuJoCo.init_visualiser()
-                panda_path = AIFMuJoCoRobot.panda_model_path()
-                env = AIFMuJoCoRobot.load_panda_env(
-                    panda_path;
+                panda_try_path = AIFMuJoCoRobot.panda_try_model_path()
+                env = AIFMuJoCoRobot.load_panda_try_env(
+                    panda_try_path;
                     robot_pos = params[:robot_pos],
                     init_pos = params[:init_pos],
                     goal = params[:goal],
                 )
                 Random.seed!(params[:seed])
                 rng = Random.default_rng()
-                belief = AIFMuJoCoRobot.init_belief(params[:robot_pos], [0.01, 0.01, 0.01])
-                PANDA_AIF_VIS_STATE[] = Dict(
+                # Belief tracks actual hand position (EE site), not mocap target
+                belief = AIFMuJoCoRobot.init_belief(AIFMuJoCoRobot.PandaTryEnv.get_position(env), [0.01, 0.01, 0.01])
+                PANDA_TRY_AIF_VIS_STATE[] = Dict(
                     :env => env,
                     :belief => belief,
                     :params => params,
@@ -688,18 +935,18 @@ function main()
                         :efe_history => Float64[],
                     ),
                 )
-                logmsg("Launching Panda AIF visualiser. Stages: reach init -> pick -> drop at goal -> place.")
+                logmsg("Launching Panda try AIF visualiser. Stages: reach box -> grasp -> lift -> drop at red dot -> place.")
                 vis_task = @async begin
                     try
-                        Base.invokelatest(MuJoCo.visualise!, env.model, env.data; controller = _panda_aif_controller!)
+                        Base.invokelatest(MuJoCo.visualise!, env.model, env.data; controller = _panda_try_aif_controller!)
                     catch err
-                        @warn "Panda visualiser exited with error" error=err
+                        @warn "Panda try visualiser exited with error" error=err
                     end
                 end
                 last_step = 0
                 while true
                     sleep(0.05)
-                    s = PANDA_AIF_VIS_STATE[]
+                    s = PANDA_TRY_AIF_VIS_STATE[]
                     if s !== nothing
                         step = s[:step_counter]
                         if step > last_step && length(s[:history][:positions]) >= 1
@@ -712,8 +959,8 @@ function main()
                         end
                     end
                 end
-                vis_state = PANDA_AIF_VIS_STATE[]
-                PANDA_AIF_VIS_STATE[] = nothing
+                vis_state = PANDA_TRY_AIF_VIS_STATE[]
+                PANDA_TRY_AIF_VIS_STATE[] = nothing
                 hist = (positions = Vector{Vector{Float64}}(), beliefs_mean = Vector{Vector{Float64}}(), actions = Vector{Vector{Float64}}(), efe_history = Float64[])
                 if vis_state !== nothing && haskey(vis_state, :history)
                     h = vis_state[:history]
