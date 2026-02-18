@@ -12,3 +12,42 @@ Render flag enabled: attempting to use MuJoCo visualiser (render=true).
 No DISPLAY detected, running headless simulation instead of visualiser.
 Done. Converged: false, steps: 2, final_dist: 1.345074
 No candidate history available to save plot.
+Done. Converged: true, steps: 4, final_dist: 0.030965
+No candidate history available to save plot.
+Done. Converged: true, steps: 4, final_dist: 0.030965
+No candidate history available to save plot.
+Render flag enabled: attempting to use MuJoCo visualiser (render=true).
+Panda mode: AIF-driven Panda arm (robot_pos -> init -> pick -> goal)
+Launching Panda AIF visualiser. Stages: reach init -> pick -> drop at goal -> place.
+[Step  1 ] stage= reach  pos=( 0.562 ,  0.0 ,  0.362 )
+[Step  2 ] stage= reach  pos=( 0.523 ,  0.0 ,  0.329 )
+[Step  3 ] stage= reach  pos=( 0.491 ,  0.0 ,  0.306 )
+[Step  4 ] stage= reach  pos=( 0.468 ,  0.0 ,  0.29 )
+[Step  5 ] stage= reach  pos=( 0.452 ,  0.0 ,  0.279 )
+[Step  6 ] stage= reach  pos=( 0.441 ,  -0.006 ,  0.271 )
+[Step  7 ] stage= reach  pos=( 0.433 ,  -0.01 ,  0.266 )
+[Step  8 ] stage= reach  pos=( 0.427 ,  -0.013 ,  0.262 )
+[Step  9 ] stage= reach  pos=( 0.423 ,  -0.009 ,  0.259 )
+[Step  10 ] stage= reach  pos=( 0.421 ,  -0.006 ,  0.251 )
+[Step  11 ] stage= reach  pos=( 0.419 ,  -0.01 ,  0.246 )
+[Step  12 ] stage= reach  pos=( 0.417 ,  -0.013 ,  0.242 )
+[Step  13 ] stage= reach  pos=( 0.417 ,  -0.015 ,  0.24 )
+[Step  14 ] stage= reach  pos=( 0.416 ,  -0.016 ,  0.238 )
+[Step  15 ] stage= reach  pos=( 0.415 ,  -0.017 ,  0.237 )
+[Step  16 ] stage= reach  pos=( 0.415 ,  -0.018 ,  0.236 )
+[Step  17 ] stage= reach  pos=( 0.409 ,  -0.018 ,  0.229 )
+[Step  18 ] stage= pick  pos=( 0.406 ,  -0.018 ,  0.222 )
+[Step  19 ] stage= pick  pos=( 0.406 ,  -0.018 ,  0.222 )
+[Step  20 ] stage= pick  pos=( 0.406 ,  -0.018 ,  0.222 )
+[Step  21 ] stage= drop  pos=( 0.403 ,  -0.019 ,  0.214 )
+[Step  22 ] stage= drop  pos=( 0.411 ,  -0.007 ,  0.213 )
+[Step  23 ] stage= drop  pos=( 0.429 ,  0.012 ,  0.217 )
+[Step  24 ] stage= drop  pos=( 0.447 ,  0.031 ,  0.226 )
+[Step  25 ] stage= drop  pos=( 0.465 ,  0.051 ,  0.239 )
+[Step  26 ] stage= drop  pos=( 0.478 ,  0.07 ,  0.253 )
+[Step  27 ] stage= drop  pos=( 0.487 ,  0.084 ,  0.263 )
+[Step  28 ] stage= drop  pos=( 0.494 ,  0.093 ,  0.27 )
+[Step  29 ] stage= drop  pos=( 0.498 ,  0.1 ,  0.275 )
+[Step  30 ] stage= drop  pos=( 0.501 ,  0.104 ,  0.278 )
+Done. Converged: false, steps: 30, final_dist: 0.807917
+No candidate history available to save plot.
