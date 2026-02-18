@@ -31,16 +31,25 @@ using .RxInferFilter
 # Sim
 include("sim/sensors.jl")
 include("sim/mujoco_env.jl")
+include("sim/panda_env.jl")
 using .Sensors
 using .MuJoCoEnv
+using .PandaEnv: PandaEnvState, load_panda_env
+
+# PandaEnvState methods (avoid export conflict with MuJoCoEnv)
+reset!(env::PandaEnvState; kwargs...) = PandaEnv.reset!(env; kwargs...)
+step!(env::PandaEnvState, ctrl; kwargs...) = PandaEnv.step!(env, ctrl; kwargs...)
+get_position(env::PandaEnvState) = PandaEnv.get_position(env)
+get_goal(env::PandaEnvState) = PandaEnv.get_goal(env)
 
 # Control
 include("control/aif_controller.jl")
 using .AIFController
 
-export run_simulation, default_model_path
+export run_simulation, default_model_path, panda_model_path
 export BeliefState, init_belief, update_belief!
 export EnvState, load_env, reset!, step!, get_position, get_goal
+export PandaEnvState, load_panda_env
 
 # Configs (loaded from experiments)
 const CONFIGS_PATH = normpath(joinpath(@__DIR__, "..", "experiments", "configs.jl"))
@@ -49,6 +58,10 @@ using .Configs
 
 function default_model_path()
     return normpath(joinpath(@__DIR__, "..", "models", "robot.xml"))
+end
+
+function panda_model_path()
+    return normpath(joinpath(@__DIR__, "..", "..", "panda_render_scene.xml"))
 end
 
 """Run the Active Inference + MuJoCo simulation.
