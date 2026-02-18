@@ -16,6 +16,7 @@ function default_config()
         steps = 500,
         goal = [0.8, 0.8, 0.4],
         init_pos = [-0.5, -0.5, 0.2],
+        robot_pos = [0.6, 0.0, 0.4],
         obs_noise = 0.005,          # scalar or [σ²_x, σ²_y, σ²_z]  (lowered for less jitter)
         process_noise = 0.002,      # lower = more stable belief prediction
         γ = 1.5,                    # pragmatic weight (goal-seeking)
