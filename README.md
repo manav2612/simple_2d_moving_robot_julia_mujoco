@@ -26,6 +26,7 @@ julia --project=. scripts/run_cli.jl --goal <x> <y> <z> --init <x> <y> <z> [opti
 |--------|-------------|---------|
 | `--goal` | Goal position (x y z) | 0.8 0.8 0.4 |
 | `--init` | Initial position (x y z) | -0.5 -0.5 0.2 |
+| `--robot` | Robot/arm starting position (x y z), used by `--panda` | 0.6 0.0 0.4 |
 | `--steps` | Max simulation steps | 500 |
 | `--ctrl_scale` | Control scaling | 3.0 |
 | `--obs_noise` | Observation variance (σ²) | 0.005 |
@@ -33,12 +34,36 @@ julia --project=. scripts/run_cli.jl --goal <x> <y> <z> --init <x> <y> <z> [opti
 | `--alpha` | EMA smoothing weight (0–1; lower = smoother) | 0.3 |
 | `--save_plot` | Path to save trajectory plot | (none) |
 | `--render` | Launch MuJoCo visualiser | false |
+| `--panda` | AIF-driven Panda arm (implies `--render`) | false |
 | `--renderarm` | Panda arm replay + scene | false |
+| `--speed` | Control steps/sec for visualiser (0 = no limit) | 0 |
+| `--save_gif` | Save simulation as animated GIF (path) | "" |
+| `--save_mp4` | Save simulation as MP4 video (path) | "" |
 | `--backend` | Inference backend: `analytic` or `rxinfer` | analytic |
+| `--agent_color` | Agent geom color r g b [a] | (default) |
+| `--goal_color` | Goal marker color r g b [a] | (default) |
+| `--seed` | Random seed | 42 |
+| `--verbose` | Print step logs | true |
+
+GIF tuning: `--gif_size W H`, `--gif_fps`, `--gif_stride`, `--gif_wp_frames`, `--gif_extra_frames`.
+MP4 tuning: `--mp4_size W H`, `--mp4_fps`, `--mp4_stride`, `--mp4_wp_frames`, `--mp4_extra_frames`.
+
+## Panda AIF Mode (`--panda`)
+
+AIF-driven Panda arm where the controller drives the arm through a pick-and-place sequence:
+
+1. **Reach**: Arm moves from `--robot` to `--init` (the object)
+2. **Pick**: Arm dwells at init; red ball attaches to arm
+3. **Drop**: AIF drives arm from init to `--goal`; red ball follows
+4. **Place**: Red ball placed on top of green box at goal
+
+```bash
+julia --project=. scripts/run_cli.jl --panda --speed 4 --robot 0.6 0 0.4 --init 0.4 0 0.2 --goal 0.6 0.2 0.35 --steps 100
+```
 
 ## Render Arm (`--renderarm`)
 
-Replays the AIF trajectory on a Panda arm with a pick-and-place scene:
+Replays a pre-computed AIF trajectory on a Panda arm with a pick-and-place scene:
 
 - **Red sphere** at initial position (from `--init`)
 - **Green box** at goal position (from `--goal`)
@@ -74,23 +99,46 @@ Run with render:
 julia --project=. scripts/run_cli.jl --render --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 --steps 500 --ctrl_scale 3.0 --save_plot trajectory.png
 ```
 
-Requires a display (WSLg or X11 on WSL2).
+Requires a display (WSLg or X11 on WSL2). When no display is available, the CLI automatically falls back to headless simulation.
+
+## Save GIF (`--save_gif`)
+
+Saves the simulation as an animated GIF using offscreen rendering. Works with `--panda`, `--render`, and `--renderarm`. The GIF is written after the simulation completes (close the visualiser or wait for steps to finish).
+
+**Requirements**: Display (DISPLAY) for OpenGL; ffmpeg (installed via visualiser deps).
+
+```bash
+# Panda AIF simulation → GIF
+julia --project=. scripts/run_cli.jl --panda --speed 4 --robot 0.6 0 0.4 --init 0.4 0 0.2 --goal 0.6 0.2 0.35 --steps 100 --save_gif simulation.gif
+
+# With renderarm (trajectory replayed on Panda arm)
+julia --project=. scripts/run_cli.jl --renderarm --goal 0.8 0.8 0.4 --init 0.3 0 0.2 --steps 500 --save_gif trajectory.gif
+```
+
+## Save MP4 (`--save_mp4`)
+
+Saves the simulation as an H.264 MP4 video. Faster encoding than GIF with better quality.
+
+```bash
+julia --project=. scripts/run_cli.jl --renderarm --goal 0.8 0.8 0.4 --init 0.3 0 0.2 --steps 500 --save_mp4 trajectory.mp4
+```
 
 ## Project Structure
 
 | Path | Description |
 |------|-------------|
 | `src/AIFMuJoCoRobot.jl` | Main module |
-| `src/aif/` | Active Inference (beliefs, EFE, policy, action) |
-| `src/sim/` | MuJoCo env and sensors |
+| `src/aif/` | Active Inference (beliefs, EFE, policy, action, RxInfer filter) |
+| `src/sim/` | MuJoCo env, Panda env, and sensors |
 | `src/control/` | AIF controller |
 | `models/robot.xml` | MuJoCo 3D robot model |
+| `panda_render_scene.xml` | Panda pick-and-place scene |
 | `experiments/` | Configs and run scripts |
 | `docs/` | Per-file documentation |
 
 ## Per-File Documentation
 
-- `docs/run_cli.md` - CLI usage and render arm (pickup, carry, drop)
+- `docs/run_cli.md` - CLI usage, Panda AIF mode, render arm, GIF/MP4 export
 - `docs/aif_beliefs.md` - Belief state (per-dimension noise, covariance bounds)
 - `docs/aif_efe.md` - Expected Free Energy (ctrl_scale in prediction)
 - `docs/aif_policy.md` - Policy selection (7×7×7 action set, EMA smoothing)
@@ -100,6 +148,7 @@ Requires a display (WSLg or X11 on WSL2).
 - `docs/control_aif_controller.md` - AIF controller
 - `docs/sim_sensors.md` - Sensors
 - `docs/sim_mujoco_env.md` - MuJoCo environment
+- `docs/sim_panda_env.md` - Panda arm environment
 - `docs/utils_math.md` - Math utilities
 - `docs/utils_logging.md` - Logging
 - `docs/models.md` - MuJoCo models

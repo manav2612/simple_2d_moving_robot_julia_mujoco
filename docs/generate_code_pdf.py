@@ -195,12 +195,14 @@ def build_pdf():
         ("src/aif/rxinfer_filter.jl", "RxInfer streaming filter"),
         ("src/control/aif_controller.jl", "AIF controller (integrator)"),
         ("src/sim/mujoco_env.jl", "MuJoCo environment wrapper"),
+        ("src/sim/panda_env.jl", "Panda arm environment adapter"),
         ("src/sim/sensors.jl", "Sensor / observation model"),
         ("src/utils/math.jl", "Math utilities"),
         ("src/utils/logging.jl", "Logging utilities"),
         ("scripts/run_cli.jl", "CLI entry point"),
         ("experiments/configs.jl", "Configuration presets"),
         ("models/robot.xml", "MuJoCo 3D robot model"),
+        ("panda_render_scene.xml", "Panda pick-and-place scene"),
     ]
     pdf.table_header(["Path", "Description"], [90, 100])
     for path, desc in struct:
@@ -228,7 +230,7 @@ def build_pdf():
         "julia --project=. -e 'using Pkg; Pkg.instantiate()'\n"
         "julia --project=. scripts/run_cli.jl \\\n"
         "  --goal 0.8 0.8 0.4 --init -0.5 -0.5 0.2 \\\n"
-        "  --steps 500 --ctrl_scale 5.0 --save_plot trajectory.png"
+        "  --steps 500 --ctrl_scale 3.0 --save_plot trajectory.png"
     )
 
     # ══════════════════════════════════════════════════════════
@@ -242,7 +244,7 @@ def build_pdf():
         "utils/math.jl  ->  utils/logging.jl\n"
         "aif/beliefs.jl -> aif/generative_model.jl -> aif/efe.jl\n"
         "aif/action.jl  -> aif/policy.jl -> aif/rxinfer_filter.jl\n"
-        "sim/sensors.jl -> sim/mujoco_env.jl\n"
+        "sim/sensors.jl -> sim/mujoco_env.jl -> sim/panda_env.jl\n"
         "control/aif_controller.jl\n"
         "experiments/configs.jl"
     )
@@ -251,6 +253,7 @@ def build_pdf():
     pdf.exports_table([
         ("run_simulation", "Run the full AIF + MuJoCo loop"),
         ("default_model_path", "Path to models/robot.xml"),
+        ("panda_model_path", "Path to panda_render_scene.xml"),
         ("BeliefState", "Gaussian belief struct"),
         ("init_belief", "Create initial belief"),
         ("update_belief!", "Bayesian update with observation"),
@@ -260,6 +263,8 @@ def build_pdf():
         ("step!", "Step MuJoCo simulation"),
         ("get_position", "Read current [x,y,z]"),
         ("get_goal", "Read goal [x,y,z]"),
+        ("PandaEnvState", "Panda arm environment struct"),
+        ("load_panda_env", "Load Panda arm scene"),
     ])
 
     pdf.subsection("run_simulation Signature")
@@ -483,6 +488,37 @@ def build_pdf():
     pdf.body("Applies ctrl and runs nsteps MuJoCo physics steps for stability.")
 
     # ══════════════════════════════════════════════════════════
+    # 10b. Panda Env
+    # ══════════════════════════════════════════════════════════
+    pdf.section("10b", "Panda Environment (panda_env.jl)")
+    pdf.body(
+        "Panda arm environment adapter for AIF-driven control. "
+        "Maps AIF's 3D control to mocap updates for the Panda end-effector."
+    )
+    pdf.exports_table([
+        ("PandaEnvState", "Struct: model, data, positions, mocap IDs"),
+        ("load_panda_env", "Load Panda scene, substitute positions"),
+    ])
+    pdf.body_italic(
+        "reset!, step!, get_position, get_goal are defined but not exported "
+        "(dispatched on PandaEnvState via the parent module to avoid conflict)."
+    )
+    pdf.subsection("load_panda_env Signature")
+    pdf.code_block(
+        "load_panda_env(path;\n"
+        "    robot_pos = [0.6, 0.0, 0.4],\n"
+        "    init_pos  = [0.4, 0.0, 0.2],\n"
+        "    goal      = [0.6, 0.2, 0.35],\n"
+        "    mocap_gain = 0.02)"
+    )
+    pdf.subsection("step! Behaviour")
+    pdf.body(
+        "Computes target = ee_pos + ctrl[1:3], then smoothly interpolates "
+        "the mocap toward the target using mocap_gain. get_position reads "
+        "from the ee_center_site (not mocap)."
+    )
+
+    # ══════════════════════════════════════════════════════════
     # 11. Sensors
     # ══════════════════════════════════════════════════════════
     pdf.section(11, "Sensors (sensors.jl)")
@@ -492,7 +528,7 @@ def build_pdf():
         ("read_observation", "Position + Gaussian noise"),
     ])
     pdf.subsection("read_observation Signature")
-    pdf.code_block("read_observation(qpos; obs_noise=0.01, rng=default_rng())")
+    pdf.code_block("read_observation(qpos; obs_noise=0.0, rng=nothing)")
     pdf.body(
         "obs_noise: scalar or [\u03c3\u00b2_x, \u03c3\u00b2_y, \u03c3\u00b2_z]. "
         "Adds sqrt(\u03c3\u00b2) * randn() per dimension when \u03c3\u00b2 > 0."
@@ -532,15 +568,20 @@ def build_pdf():
     opts = [
         ("--goal", "Goal position (x y z)", "0.8 0.8 0.4"),
         ("--init", "Initial position (x y z)", "-0.5 -0.5 0.2"),
+        ("--robot", "Robot/arm start pos (x y z)", "0.6 0.0 0.4"),
         ("--steps", "Max simulation steps", "500"),
         ("--ctrl_scale", "Control scaling factor", "3.0"),
         ("--obs_noise", "Observation variance", "0.005"),
         ("--process_noise", "Process noise variance", "0.002"),
         ("--alpha", "EMA smoothing (0-1; lower=smoother)", "0.3"),
         ("--backend", "analytic | rxinfer", "analytic"),
+        ("--speed", "Ctrl steps/sec for visualiser (0=no limit)", "0"),
         ("--save_plot", "Path to save trajectory PNG", "(none)"),
         ("--render", "Launch MuJoCo visualiser", "false"),
-        ("--renderarm", "Panda arm pick-and-place", "false"),
+        ("--panda", "AIF-driven Panda arm (implies render)", "false"),
+        ("--renderarm", "Panda arm trajectory replay", "false"),
+        ("--save_gif", "Save as animated GIF (path)", "(none)"),
+        ("--save_mp4", "Save as MP4 video (path)", "(none)"),
         ("--agent_color", "Agent color r g b [a]", "(default)"),
         ("--goal_color", "Goal color r g b [a]", "(default)"),
         ("--seed", "Random seed", "42"),
@@ -550,12 +591,28 @@ def build_pdf():
     for opt, desc, default in opts:
         pdf.table_row([opt, desc, default], [45, 90, 55])
 
-    pdf.subsection("Render Arm Sequence")
+    pdf.subsection("Panda AIF Mode (--panda)")
     pdf.body(
-        "With --renderarm, the AIF trajectory is replayed on a Panda arm:\n"
+        "AIF-driven Panda arm where the controller drives the arm through stages:\n"
+        "1. Reach: arm moves from --robot to --init (object pickup)\n"
+        "2. Pick: arm dwells at init; red ball attaches\n"
+        "3. Drop: AIF drives arm from init to --goal; red ball follows\n"
+        "4. Place: red ball placed on green box at goal\n"
+        "Implies --render. Use --robot to set the arm starting position."
+    )
+
+    pdf.subsection("Render Arm Replay (--renderarm)")
+    pdf.body(
+        "Replays a pre-computed AIF trajectory on a Panda arm:\n"
         "1. Arm moves to init position (pickup)\n"
         "2. Red ball follows arm along AIF path (carry)\n"
         "3. Red ball placed on green box at goal (drop)"
+    )
+    pdf.subsection("Save GIF / MP4")
+    pdf.body(
+        "--save_gif <path> saves as animated GIF. --save_mp4 <path> saves as H.264 MP4. "
+        "Both use offscreen rendering. Work with --panda, --render, and --renderarm. "
+        "Requires DISPLAY and ffmpeg. GIF/MP4 tuning options available (see --gif_* / --mp4_*)."
     )
     pdf.body(
         "Panda workspace bounds: X [0.2, 0.8], Y [-0.4, 0.4], "
@@ -581,6 +638,7 @@ def build_pdf():
         ("steps", "500"),
         ("goal", "[0.8, 0.8, 0.4]"),
         ("init_pos", "[-0.5, -0.5, 0.2]"),
+        ("robot_pos", "[0.6, 0.0, 0.4]"),
         ("obs_noise", "0.005"),
         ("process_noise", "0.002"),
         ("\u03b3", "1.5"),

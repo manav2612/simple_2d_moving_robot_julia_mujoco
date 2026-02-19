@@ -61,7 +61,7 @@ function default_model_path()
 end
 
 function panda_model_path()
-    return normpath(joinpath(@__DIR__, "..", "..", "panda_render_scene.xml"))
+    return normpath(joinpath(@__DIR__, "..", "panda_render_scene.xml"))
 end
 
 """Run the Active Inference + MuJoCo simulation.
